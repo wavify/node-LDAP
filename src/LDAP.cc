@@ -19,6 +19,8 @@ static Persistent<String> symbol_error;
 static Persistent<String> symbol_result;
 static Persistent<String> symbol_unknown;
 
+struct timeval ldap_tv = { 0, 0 }; // static struct used to make ldap_result non-blocking
+
 #define REQ_FUN_ARG(I, VAR)                                             \
   if (args.Length() <= (I) || !args[I]->IsFunction())                   \
     return ThrowException(Exception::TypeError(                         \
@@ -427,6 +429,10 @@ public:
     char * binddn = NULL;
     char * password = NULL;
 
+    if (c->ld == NULL) {
+      RETURN_INT(LDAP_SERVER_DOWN);
+    }
+
     if (args.Length() > 0) {
       // this is NOT an anonymous bind
       ENFORCE_ARG_LENGTH(2, "Invalid number of arguments to SimpleBind()");
@@ -439,10 +445,6 @@ public:
       password = strdup(*j_password);
     }
     
-    if (c->ld == NULL) {
-      RETURN_INT(LDAP_SERVER_DOWN);
-    }
-
     if ((msgid = ldap_simple_bind(c->ld, binddn, password)) == LDAP_SERVER_DOWN) {
       c->Emit(symbol_disconnected, 0, NULL);
     } else {
@@ -523,7 +525,7 @@ public:
       return;
     }
 
-    if ((res = ldap_result(c->ld, LDAP_RES_ANY, 1, NULL, &ldap_res)) < 1) {
+    if ((res = ldap_result(c->ld, LDAP_RES_ANY, 1, &ldap_tv, &ldap_res)) < 1) {
       c->Emit(symbol_disconnected, 0, NULL);
       return;
     }
