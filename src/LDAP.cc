@@ -89,6 +89,7 @@ public:
     NODE_SET_PROTOTYPE_METHOD(s_ct, "simpleBind",   SimpleBind);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "rename",       Rename);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "add",          Add);
+    NODE_SET_PROTOTYPE_METHOD(s_ct, "remove",          Delete);
 
     symbol_connected    = NODE_PSYMBOL("connected");
     symbol_disconnected = NODE_PSYMBOL("disconnected");
@@ -346,6 +347,40 @@ public:
 
     RETURN_INT(msgid);
   }
+  
+  NODE_METHOD(Delete)
+  {
+    HandleScope scope;
+    GETOBJ(c);
+    int fd;
+    int msgid;
+    char * dn = NULL;
+
+    if (args.Length() > 0) {
+      // this is NOT an anonymous bind
+      ENFORCE_ARG_LENGTH(1, "Invalid number of arguments to Delete()");
+      ENFORCE_ARG_STR(0);
+      ARG_STR(j_dn, 0);
+      
+      dn = strdup(*j_dn);
+    }
+    
+    if (c->ld == NULL) {
+      RETURN_INT(LDAP_SERVER_DOWN);
+    }
+
+    if ((msgid = ldap_delete(c->ld, dn)) == LDAP_SERVER_DOWN) {
+      c->Emit(symbol_disconnected, 0, NULL);
+    } else {
+      ldap_get_option(c->ld, LDAP_OPT_DESC, &fd);    
+      ev_io_set(&(c->read_watcher_), fd, EV_READ);
+      ev_io_start(EV_DEFAULT_ &(c->read_watcher_));
+    }
+  
+    free(dn);
+
+    RETURN_INT(msgid);
+  }
 
   NODE_METHOD(Rename)
   {
@@ -509,6 +544,7 @@ public:
       case LDAP_RES_MODIFY:
       case LDAP_RES_MODDN:
       case LDAP_RES_ADD:
+      case LDAP_RES_DELETE:
         c->Emit(symbol_result, 2, args);
         break;
 

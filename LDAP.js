@@ -58,6 +58,11 @@ var Connection = function() {
         return self.setCallback(msgid, CB);
     };
 
+    self.remove = function(dn, CB) {
+        var msgid = binding.remove(dn);
+        return self.setCallback(msgid, CB);
+    };
+
     self.modify = function(dn, data, CB) {
         var msgid = binding.modify(dn, data);
         return self.setCallback(msgid, CB);
