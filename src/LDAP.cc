@@ -87,6 +87,7 @@ public:
     NODE_SET_PROTOTYPE_METHOD(s_ct, "open",         Open);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "close",        Close);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "search",       Search);
+    NODE_SET_PROTOTYPE_METHOD(s_ct, "searchDeref",       SearchDeref);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "modify",       Modify);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "simpleBind",   SimpleBind);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "rename",       Rename);
@@ -205,6 +206,56 @@ public:
 
     RETURN_INT(msgid);
   }
+
+  NODE_METHOD(SearchDeref) {
+    HandleScope scope;
+    GETOBJ(c);
+    int fd, msgid, opt_deref_default;
+    char * attrs[255];
+    char ** ap;
+    
+    //base scope filter attrs
+    ENFORCE_ARG_LENGTH(5, "Invalid number of arguments to SearchExt()");
+    ENFORCE_ARG_STR(0);
+    ENFORCE_ARG_NUMBER(1);
+    ENFORCE_ARG_STR(2);
+    ENFORCE_ARG_STR(3);
+    ENFORCE_ARG_NUMBER(4);
+    
+    ARG_STR(base,         0);
+    ARG_INT(searchscope,  1);
+    ARG_STR(filter,       2);
+    ARG_STR(attrs_str,    3);
+    ARG_INT(opt_deref,  4);
+    
+    if (c->ld == NULL) {
+      c->Emit(symbol_disconnected, 0, NULL);
+      RETURN_INT(LDAP_SERVER_DOWN);
+    }
+    
+    char *bufhead = strdup(*attrs_str);
+    char *buf = bufhead;
+    
+    for (ap = attrs; (*ap = strsep(&buf, " \t,")) != NULL;)
+      if (**ap != '\0')
+        if (++ap >= &attrs[255])
+          break;
+    //get deref option for backup
+    ldap_get_option(c->ld, LDAP_OPT_DEREF, &opt_deref_default);
+    //set deref option
+    ldap_set_option(c->ld, LDAP_OPT_DEREF, &opt_deref);
+    if ((msgid = ldap_search(c->ld, *base, searchscope, *filter, attrs, 0)) >= 0) {
+      ldap_set_option(c->ld, LDAP_OPT_DEREF, &opt_deref_default);
+      ldap_get_option(c->ld, LDAP_OPT_DESC, &fd);
+      ev_io_set(&(c->read_watcher_), fd, EV_READ);
+      ev_io_start(EV_DEFAULT_ &(c->read_watcher_));
+    }
+    
+    free(bufhead);
+    
+    RETURN_INT(msgid);
+  }
+
 
   NODE_METHOD(Modify) {
     HandleScope scope;

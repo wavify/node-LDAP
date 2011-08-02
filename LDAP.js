@@ -12,6 +12,11 @@ var Connection = function() {
     self.SUBTREE = 2;
     self.SUBORDINATE = 3;
     self.DEFAULT = -1;
+    
+    self.DEREF_NEVER = 0;
+    self.DEREF_SEARCHING = 1;
+    self.DEREF_FINDIN = 2;
+    self.DEREF_ALWAYS = 3;
 
     self.setCallback = function(msgid, CB) {
         if (msgid >= 0) {
@@ -40,6 +45,11 @@ var Connection = function() {
 
     self.search = function(base, scope, filter, attrs, CB) {
         var msgid = binding.search(base, scope, filter, attrs);
+        self.setCallback(msgid, CB);
+    };
+    
+    self.searchDeref = function(base, scope, filter, attrs, deref, CB) {
+        var msgid = binding.searchDeref(base, scope, filter, attrs, deref);
         self.setCallback(msgid, CB);
     };
 
