@@ -22,11 +22,13 @@ var Connection = function() {
         if (msgid >= 0) {
             totalqueries++;
             if (typeof(CB) == 'function') {
-                callbacks[msgid] = CB;
-                callbacks[msgid].tm = setTimeout(function() {
-                    CB(msgid, new Error('Request timed out', -2));
-                    delete callbacks[msgid];
-                }, querytimeout);
+                callbacks[msgid] = {
+                  cb: CB,
+                  tm: setTimeout(function() {
+                      CB(msgid, new Error('Request timed out', -2));
+                      delete callbacks[msgid];
+                  }, querytimeout)
+                };
             }
         } else {
             // msgid is -1, which means an error. We won't add the callback to the array,
@@ -90,7 +92,7 @@ var Connection = function() {
         // result contains the LDAP response type. It's unused.
         if (callbacks[msgid]) {
             clearTimeout(callbacks[msgid].tm);
-            callbacks[msgid](msgid, null, data);
+            callbacks[msgid].cb(msgid, null, data);
             delete(callbacks[msgid]);
         }
     });
@@ -99,7 +101,7 @@ var Connection = function() {
         // result contains the LDAP response type. It's unused.
         if (callbacks[msgid]) {
             clearTimeout(callbacks[msgid].tm);
-            callbacks[msgid](msgid, null);
+            callbacks[msgid].cb(msgid, null);
             delete(callbacks[msgid]);
         }
     });
@@ -107,7 +109,7 @@ var Connection = function() {
     binding.addListener("error", function(msgid, err, msg) {
         if (callbacks[msgid]) {
             clearTimeout(callbacks[msgid].tm);
-            callbacks[msgid](msgid, new Error(err, msg));
+            callbacks[msgid].cb(msgid, new Error(err, msg));
             delete(callbacks[msgid]);
         }
     });
