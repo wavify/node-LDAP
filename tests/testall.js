@@ -25,15 +25,18 @@ function ldapInit(/* [bindOption], callback */) {
   var callback = arguments[arguments.length - 1];
   var binddn = ldapConfig.binddn;
   var password = ldapConfig.password;
+  var querytimeout = null;
   if(arguments.length === 2) {
     var bindOption = arguments[0];
-    binddn = bindOption.dn;
-    password = bindOption.password;
+    binddn = bindOption.dn || binddn;
+    password = bindOption.password || password;
+    querytimeout = bindOption.querytimeout;
   }
   
   var ldap = new LDAP.Connection();
   ldap.maxconnectretries = 3;
   ldap.retrywait = 100;
+  ldap.querytimeout = querytimeout;
   
   if(ldap.open('ldap://' + ldapConfig.server) < 0) {
     throw new Error('Cannot open LDAP connection to ' + server);
@@ -79,7 +82,7 @@ function test2() {
   cnx.simpleBind(ldapConfig.binddn, ldapConfig.password, bound);
   
   function bound(msgId, err) {
-    assert.ok(!err);
+    assert.ok(!err, err);
     
     cnx.simpleBind(ldapConfig.binddn, 'wrongpassword', boundFail);
   }
@@ -331,9 +334,149 @@ function test10() {
     assert.equal(res.length, 1);
     assert.equal(res[0].cn[0], 'Barbara Jensen');
     printOK('test10');
-    done();
+    test11();
   }
   
+}
+
+// prepare entry for search test
+function test11() {
+  var dn = 'ou=tests,dc=sample,dc=com';
+  var aliasdn= 'ou=alias,dc=sample,dc=com';
+  var count = 0;
+  var aliasCount = 0;
+  var maxConnection = 100; // maximum should not be more than 100
+  var multiplier = 100;
+  var max = maxConnection * multiplier;
+  var start;
+  var connectionList = [];
+  
+  var simpleSum = 0;
+  var aliasSum = 0;
+  
+  ldap.add(dn, [
+    { type: 'objectClass',
+      vals: ['organizationalUnit']},
+    { type: 'ou',
+      vals: ['tests'] }
+  ], added);
+  
+  function added(msgId, err) {
+    assert.ok(!err);
+    ldap.add(aliasdn, [
+      { type: 'objectClass',
+        vals: ['organizationalUnit']},
+      { type: 'ou',
+        vals: ['alias'] }
+    ], aliasTreeAdded);
+  }
+  
+  function aliasTreeAdded(msgId, err) {
+    assert.ok(!err);
+    for(var i = 0; i < maxConnection; i++) {
+      ldapInit({ querytimeout: 3600000 }, function(err, ldap) {
+        assert.ok(!err, JSON.stringify(err));
+        connectionList.push(ldap);
+        
+        if(connectionList.length == maxConnection) {
+          start = new Date();
+          connectionList.forEach(function(ldap, i) {
+            for(var j = 0; j < multiplier; j++) {
+              var k = i * multiplier + j;
+              var userdn;
+              ldap.add(userdn = 'cn=user' + k + ',' + dn, [
+                { type: 'objectClass',
+                  vals: ['person']},
+                { type: 'cn',
+                  vals: ['user' + k] },
+                { type: 'sn',
+                  vals: ['test']}
+              ], userAdded);
+              
+              ldap.add('cn=user' + k + ',' + aliasdn, [
+                { type: 'objectClass',
+                  vals: ['alias', 'extensibleObject']},
+                { type: 'cn',
+                  vals: ['user' + k] },
+                { type: 'aliasedObjectName',
+                  vals: [userdn]}
+              ], aliasAdded);
+            }
+          });
+        }
+      });
+    }
+    
+  }
+  
+  function userAdded(msgId, err) {
+    console.log(count+1);
+    assert.ok(!err, err);
+    if(++count == max && aliasCount == max) {
+      bothAdded();
+    }
+  }
+  
+  function aliasAdded(msgId, err) {
+    console.log((aliasCount+1) + ' a');
+    assert.ok(!err, err);
+    if(++aliasCount == max && count == max) {
+      bothAdded();
+    }
+  }
+  
+  function bothAdded() {
+    console.error(new Date() - start);
+    connectionList.forEach(function(ldap) {
+      ldap.close();
+    });
+    
+    individualTest(0);
+    
+    // printOK('test11');
+    // done();
+  }
+  
+  function individualTest(x) {
+    if(x == max) {
+      individualAliasTest(0);
+      return;
+    }
+    
+    var start1 = new Date().getTime();
+    ldap.search(dn, ldap.SUBTREE, 'cn=user' + x, '*', function searched(msgId, err, res) {
+      var time = new Date().getTime() - start1;
+      assert.ok(!err, err);
+      assert.equal(res.length, 1);
+      console.log(x + ': ' + time);
+      simpleSum += time;
+      process.nextTick(function() {
+        individualTest(x + 1);
+      });
+    });
+  }
+  
+  function individualAliasTest(x) {
+    if(x == max) {
+      console.log('simple search: ' + simpleSum + ' (' + (simpleSum/max) + ' avg.)');
+      console.log('alias search: ' + aliasSum + ' (' + (aliasSum/max) + ' avg.)');
+      printOK('test11');
+      done();
+      return;
+    }
+    
+    var start2 = new Date().getTime();
+    ldap.searchDeref(aliasdn, ldap.SUBTREE, 'cn=user' + x, '*', ldap.DEREF_ALWAYS, function searched(msgId, err, res) {
+      var time = new Date().getTime() - start2;
+      assert.ok(!err, err);
+      assert.equal(res.length, 1);
+      console.log(x + 'a: ' + time);
+      aliasSum += time;
+      process.nextTick(function() {
+        individualAliasTest(x + 1);
+      });
+    });
+  }
 }
 
 function done() {

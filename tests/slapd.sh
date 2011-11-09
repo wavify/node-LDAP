@@ -1,16 +1,16 @@
 #!/bin/sh
 
-SLAPD=/usr/local/libexec/slapd
-SLAPADD=/usr/local/sbin/slapadd
-MKDIR=/bin/mkdir
-RM=/bin/rm
-KILL=/bin/kill
+SLAPD=/usr/libexec/slapd
+SLAPADD=/usr/sbin/slapadd
+MKDIR=mkdir
+RM=rm
+KILL=kill
 
 $RM -rf openldap-data
 $MKDIR openldap-data
 
 $SLAPADD -f slapd.conf < startup.ldif
-$SLAPD -d 255 -F . -f slapd.conf -hldap://localhost:1234 
+$SLAPD -d 4 -F . -f ./slapd.conf -hldap://localhost:1234 
 
 # slapd should be running now
 

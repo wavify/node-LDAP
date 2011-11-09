@@ -15,7 +15,7 @@ var Connection = function() {
     
     self.DEREF_NEVER = 0;
     self.DEREF_SEARCHING = 1;
-    self.DEREF_FINDIN = 2;
+    self.DEREF_FINDING = 2;
     self.DEREF_ALWAYS = 3;
 
     self.setCallback = function(msgid, CB) {
@@ -27,7 +27,7 @@ var Connection = function() {
                   tm: setTimeout(function() {
                       CB(msgid, new Error('Request timed out', -2));
                       delete callbacks[msgid];
-                  }, querytimeout)
+                  }, self.querytimeout || querytimeout)
                 };
             }
         } else {
