@@ -36,11 +36,14 @@ struct timeval ldap_tv = { 0, 0 }; // static struct used to make ldap_result non
 #define ENFORCE_ARG_LENGTH(n, m)                   \
   if (args.Length() < n) THROW(m);
   
+#define ENFORCE_ARG_OBJECT(n)                      \
+  if (!args[n]->IsObject()) THROW("Argument must be object");
+
 #define ENFORCE_ARG_STR(n)                      \
   if (!args[n]->IsString()) THROW("Argument must be string");
 
 #define ENFORCE_ARG_ARRAY(n)                      \
-  if (!args[n]->IsArray()) THROW("Argument must be string");
+  if (!args[n]->IsArray()) THROW("Argument must be array");
 
 #define ENFORCE_ARG_NUMBER(n)                      \
   if (!args[n]->IsNumber()) THROW("Argument must be numeric");
@@ -58,6 +61,8 @@ struct timeval ldap_tv = { 0, 0 }; // static struct used to make ldap_result non
 #define ARG_BOOL(v,a) int v = args[a]->BooleanValue();
 
 #define ARG_ARRAY(v, a) Local<Array> v = Local<Array>::Cast(args[a]);
+
+#define ARG_OBJECT(v, a) Local<Object> v = Local<Object>::Cast(args[a]);
     
 #define RETURN_INT(i) return scope.Close(Integer::New(i));
 
@@ -88,6 +93,7 @@ public:
     NODE_SET_PROTOTYPE_METHOD(s_ct, "close",        Close);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "search",       Search);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "searchDeref",       SearchDeref);
+    NODE_SET_PROTOTYPE_METHOD(s_ct, "pagedSearch",       PagedSearch);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "modify",       Modify);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "simpleBind",   SimpleBind);
     NODE_SET_PROTOTYPE_METHOD(s_ct, "rename",       Rename);
@@ -256,6 +262,91 @@ public:
     RETURN_INT(msgid);
   }
 
+  NODE_METHOD(PagedSearch) {
+    HandleScope scope;
+    GETOBJ(c);
+    int fd, msgid, l_rc;
+    char pagingCriticality = 'T';
+    char * attrs[255];
+    char ** ap;
+    struct berval cookie, *cookiePtr = NULL;
+    LDAPControl *controls[2] = { NULL, NULL }, *pageControl = NULL;
+    Local<Object> cookieObject;
+    Local<Integer> pageSize;
+    
+    //base scope filter attrs
+    ENFORCE_ARG_LENGTH(5, "Invalid number of arguments to Search()");
+    ENFORCE_ARG_STR(0);
+    ENFORCE_ARG_NUMBER(1);
+    ENFORCE_ARG_STR(2);
+    ENFORCE_ARG_STR(3);
+    ENFORCE_ARG_OBJECT(4);
+    
+    ARG_STR(base,         0);
+    ARG_INT(searchscope,  1);
+    ARG_STR(filter,       2);
+    ARG_STR(attrs_str,    3);
+    ARG_OBJECT(pageOption,    4);
+    
+    if (c->ld == NULL) {
+      c->Emit(symbol_disconnected, 0, NULL);
+      RETURN_INT(LDAP_SERVER_DOWN);
+    }
+    
+    char *bufhead = strdup(*attrs_str);
+    char *buf = bufhead;
+    
+    for (ap = attrs; (*ap = strsep(&buf, " \t,")) != NULL;)
+      if (**ap != '\0')
+        if (++ap >= &attrs[255])
+          break;
+    
+    // parse cookie and page size
+    cookie.bv_val = NULL;
+    cookieObject = Local<Object>::Cast(pageOption->Get(String::New("cookie")));
+    if(!cookieObject->IsUndefined()) {
+      Local<Array> bv_val = Local<Array>::Cast(cookieObject->Get(String::New("bv_val")));
+      if(!bv_val->IsUndefined()) {
+        cookie.bv_len = cookieObject->Get(String::New("bv_len"))->Int32Value();
+        cookie.bv_val = (char *) malloc(sizeof(char) * (1 + cookie.bv_len));
+        for(unsigned int i = 0; i < cookie.bv_len; i++) {
+          cookie.bv_val[i] = bv_val->Get(Integer::New(i))->Uint32Value();
+        }
+        cookie.bv_val[cookie.bv_len] = '\0';
+      //    cookie.bv_val = *bv_val;
+      //    cookie.bv_len = cookieObject->Get(String::New("bv_len"))->Int32Value();
+        cookiePtr = &cookie;
+      }
+    }
+
+    pageSize = Local<Integer>::Cast(pageOption->Get(String::New("pageSize")));
+
+    // create page control
+    l_rc = ldap_create_page_control(c->ld, pageSize->IsUndefined() ? 10 : pageSize->Int32Value(), cookiePtr, pagingCriticality, &pageControl);
+    controls[0] = pageControl;
+    
+    if (LDAP_SUCCESS == ldap_search_ext(c->ld, *base, searchscope, *filter, attrs, 0, controls[0] == NULL ? NULL : controls, NULL, NULL, 0, &msgid)) {
+      ldap_get_option(c->ld, LDAP_OPT_DESC, &fd);
+      ev_io_set(&(c->read_watcher_), fd, EV_READ);
+      ev_io_start(EV_DEFAULT_ &(c->read_watcher_));
+    } else {
+      msgid = -1;
+    }
+    
+    free(bufhead);
+        
+    if(cookie.bv_val != NULL) {
+      free(cookie.bv_val);
+      cookie.bv_val = NULL;
+    }
+    
+    if(pageControl != NULL) {
+      ldap_control_free(pageControl);
+    }
+
+    RETURN_INT(msgid);
+  }
+  
 
   NODE_METHOD(Modify) {
     HandleScope scope;
@@ -553,6 +644,66 @@ public:
 
     return scope.Close(js_result_list);
   }
+  
+  Local<Value> parsePageControl(LDAPConnection * c, LDAPMessage * res) 
+  {
+    HandleScope scope;
+    Local<Object> js_result;
+    int l_rc, l_errcode, totalCount, morePages;
+    struct berval cookie;
+    LDAPControl **returnedControls = NULL;
+    LDAPControl *control;
+    
+    cookie.bv_val = NULL;
+    
+    js_result = Object::New();
+    
+    l_rc = ldap_parse_result(c->ld, res, &l_errcode, NULL, NULL, NULL, &returnedControls, 0);
+    
+    control = ldap_control_find(LDAP_CONTROL_PAGEDRESULTS, returnedControls, NULL);
+    
+    if(control == NULL) {
+      /* Cleanup the controls used. */
+      if (returnedControls != NULL)
+      {
+        ldap_controls_free(returnedControls);
+        returnedControls = NULL;
+      }
+      return scope.Close(js_result);
+    }
+    
+    /* Parse the page control returned to get the cookie and          */
+    /* determine whether there are more pages.                        */
+    l_rc = ldap_parse_pageresponse_control(c->ld, control, &totalCount, &cookie);
+    
+    /* Determine if the cookie is not empty, indicating there are more pages for these search parameters. */
+    if (cookie.bv_val != NULL && (strlen(cookie.bv_val) > 0)) {
+      morePages = 1;
+      js_result->Set(String::New("bv_len"), Integer::New(cookie.bv_len));
+      
+      int bv_len = cookie.bv_len;
+      Local<Array> bv_val = Array::New(bv_len);
+      for(int i = 0; i < bv_len; i++) {
+        bv_val->Set(Integer::New(i), Uint32::New(cookie.bv_val[i]));
+      }
+      
+      js_result->Set(String::New("bv_val"), bv_val);
+    } else {
+      morePages = 0;
+    }
+    
+    control = NULL;
+    
+    /* Cleanup the controls used. */
+    if (returnedControls != NULL)
+    {
+      ldap_controls_free(returnedControls);
+      returnedControls = NULL;
+    }
+    
+    return scope.Close(js_result);
+  }
+
 
   static void
   io_event (EV_P_ ev_io *w, int revents)
@@ -560,7 +711,7 @@ public:
     HandleScope scope;
     LDAPConnection *c = static_cast<LDAPConnection*>(w->data);
     LDAPMessage *ldap_res;  
-    Handle<Value> args[3];
+    Handle<Value> args[4];
     int res;
     int msgid;
     int error;
@@ -602,8 +753,9 @@ public:
         break;
 
       case  LDAP_RES_SEARCH_RESULT:
+        args[3] = c->parsePageControl(c, ldap_res);
         args[2] = c->parseReply(c, ldap_res);
-        c->Emit(symbol_search, 3, args);
+        c->Emit(symbol_search, 4, args);
         break;
 
       default:
