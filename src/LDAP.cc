@@ -265,14 +265,15 @@ public:
   NODE_METHOD(PagedSearch) {
     HandleScope scope;
     GETOBJ(c);
-    int fd, msgid, l_rc;
-    char pagingCriticality = 'T';
+    int fd, msgid, l_rc, ctrlCount = 0;
+    char sortCriticality = 'T';
     char * attrs[255];
     char ** ap;
-    struct berval cookie, *cookiePtr = NULL;
-    LDAPControl *controls[2] = { NULL, NULL }, *pageControl = NULL;
-    Local<Object> cookieObject;
+    struct berval context, *contextPtr = NULL;
+    LDAPControl *controls[3] = { NULL, NULL, NULL }, *sortControl = NULL, *vlvControl = NULL;
+    Local<Object> contextObj;
     Local<Integer> pageSize;
+    Local<Integer> offset;
     
     //base scope filter attrs
     ENFORCE_ARG_LENGTH(5, "Invalid number of arguments to Search()");
@@ -302,30 +303,68 @@ public:
           break;
     
     // parse cookie and page size
-    cookie.bv_val = NULL;
-    cookieObject = Local<Object>::Cast(pageOption->Get(String::New("cookie")));
-    if(!cookieObject->IsUndefined()) {
-      Local<Array> bv_val = Local<Array>::Cast(cookieObject->Get(String::New("bv_val")));
+    context.bv_val = NULL;
+    contextObj = Local<Object>::Cast(pageOption->Get(String::New("context")));
+    
+    if(!contextObj->IsUndefined()) {
+      Local<Array> bv_val = Local<Array>::Cast(contextObj->Get(String::New("bv_val")));
       if(!bv_val->IsUndefined()) {
-        cookie.bv_len = cookieObject->Get(String::New("bv_len"))->Int32Value();
-        cookie.bv_val = (char *) malloc(sizeof(char) * (1 + cookie.bv_len));
-        for(unsigned int i = 0; i < cookie.bv_len; i++) {
-          cookie.bv_val[i] = bv_val->Get(Integer::New(i))->Uint32Value();
+        context.bv_len = contextObj->Get(String::New("bv_len"))->Int32Value();
+        context.bv_val = (char *) malloc(sizeof(char) * (1 + context.bv_len));
+        for(unsigned int i = 0; i < context.bv_len; i++) {
+          context.bv_val[i] = bv_val->Get(Integer::New(i))->Uint32Value();
         }
-        cookie.bv_val[cookie.bv_len] = '\0';
+        context.bv_val[context.bv_len] = '\0';
       //    cookie.bv_val = *bv_val;
       //    cookie.bv_len = cookieObject->Get(String::New("bv_len"))->Int32Value();
-        cookiePtr = &cookie;
+        contextPtr = &context;
       }
     }
 
     pageSize = Local<Integer>::Cast(pageOption->Get(String::New("pageSize")));
-
-    // create page control
+    offset = Local<Integer>::Cast(pageOption->Get(String::New("offset")));
+    // create page control (DEPRECATED: use vlv instead)
+    /*
     l_rc = ldap_create_page_control(c->ld, pageSize->IsUndefined() ? 10 : pageSize->Int32Value(), cookiePtr, pagingCriticality, &pageControl);
-    controls[0] = pageControl;
+    controls[ctrlCount++] = pageControl;
+    */
     
-    if (LDAP_SUCCESS == ldap_search_ext(c->ld, *base, searchscope, *filter, attrs, 0, controls[0] == NULL ? NULL : controls, NULL, NULL, 0, &msgid)) {
+    // parse sort keys
+    Local<String> _sortString = String::New("cn:caseIgnoreOrderingMatch");
+    if(pageOption->Has(String::New("sortString"))) {
+      _sortString = Local<String>::Cast(pageOption->Get(String::New("sortString")));
+    }
+    
+    String::Utf8Value sortString(_sortString);
+
+    LDAPSortKey **sortKeyList = NULL;
+    l_rc = ldap_create_sort_keylist(&sortKeyList, *sortString);
+
+    if(sortKeyList == NULL) THROW(*sortString);
+      
+    // create sort control
+    l_rc = ldap_create_sort_control(c->ld, sortKeyList, sortCriticality, &sortControl);
+    
+    if(l_rc != LDAP_SUCCESS) THROW("create sort control failed");
+    
+    // free key list
+    ldap_free_sort_keylist(sortKeyList);
+    controls[ctrlCount++] = sortControl;
+    
+    LDAPVLVInfo vlvInfo;
+    
+    vlvInfo.ldvlv_after_count = (pageSize->IsUndefined() ? 10 : pageSize->Int32Value()) - 1;
+    vlvInfo.ldvlv_attrvalue = NULL;
+    vlvInfo.ldvlv_before_count = 0;
+    vlvInfo.ldvlv_context = contextPtr;
+    vlvInfo.ldvlv_count = 0;
+    vlvInfo.ldvlv_extradata = NULL;
+    vlvInfo.ldvlv_offset = offset->IsUndefined() ? 0 : offset->Int32Value();
+    // vlvInfo.ldvlv_version = LDAP_VLVINFO_VERSION; // Somehow ldapsearch.c just left this field out. Maybe it's not used
+    l_rc = ldap_create_vlv_control(c->ld, &vlvInfo, &vlvControl);
+    controls[ctrlCount++] = vlvControl;
+
+    if (LDAP_SUCCESS == ldap_search_ext(c->ld, *base, searchscope, *filter, attrs, 0, ctrlCount ? controls : NULL, NULL, NULL, 0, &msgid)) {
       ldap_get_option(c->ld, LDAP_OPT_DESC, &fd);
       ev_io_set(&(c->read_watcher_), fd, EV_READ);
       ev_io_start(EV_DEFAULT_ &(c->read_watcher_));
@@ -335,13 +374,21 @@ public:
     
     free(bufhead);
         
-    if(cookie.bv_val != NULL) {
-      free(cookie.bv_val);
-      cookie.bv_val = NULL;
+    if(context.bv_val != NULL) {
+      free(context.bv_val);
+      context.bv_val = NULL;
     }
     
-    if(pageControl != NULL) {
-      ldap_control_free(pageControl);
+//    if(pageControl != NULL) {
+//      ldap_control_free(pageControl);
+//    }
+    
+    if(vlvControl != NULL) {
+      ldap_control_free(vlvControl);
+    }
+    
+    if(sortControl != NULL) {
+      ldap_control_free(sortControl);
     }
 
     RETURN_INT(msgid);
@@ -649,18 +696,30 @@ public:
   {
     HandleScope scope;
     Local<Object> js_result;
-    int l_rc, l_errcode, totalCount, morePages;
-    struct berval cookie;
+    int l_rc, l_errcode;
+    struct berval *context;
     LDAPControl **returnedControls = NULL;
-    LDAPControl *control;
-    
-    cookie.bv_val = NULL;
+    LDAPControl *control = NULL, *sortControl = NULL;
+    ber_int_t sortRC = 0;
+    char *attrInError = NULL;
     
     js_result = Object::New();
     
     l_rc = ldap_parse_result(c->ld, res, &l_errcode, NULL, NULL, NULL, &returnedControls, 0);
+
+    sortControl = ldap_control_find(LDAP_CONTROL_SORTRESPONSE, returnedControls, NULL);
+    if(sortControl != NULL) {
+      l_rc = ldap_parse_sortresponse_control(c->ld, sortControl, &sortRC, &attrInError);
+      if((l_rc != LDAP_SUCCESS) | (sortRC != LDAP_SUCCESS)) {
+        js_result->Set(String::New("sort_l_rc"), Integer::New(l_rc));
+        js_result->Set(String::New("sort_return_code"), Integer::New(sortRC));
+        if(attrInError!= NULL)
+          js_result->Set(String::New("sort_attr_error"), String::New(attrInError));
+      }
+      sortControl = NULL;
+    }
     
-    control = ldap_control_find(LDAP_CONTROL_PAGEDRESULTS, returnedControls, NULL);
+    control = ldap_control_find(LDAP_CONTROL_VLVRESPONSE, returnedControls, NULL);
     
     if(control == NULL) {
       /* Cleanup the controls used. */
@@ -672,24 +731,26 @@ public:
       return scope.Close(js_result);
     }
     
-    /* Parse the page control returned to get the cookie and          */
-    /* determine whether there are more pages.                        */
-    l_rc = ldap_parse_pageresponse_control(c->ld, control, &totalCount, &cookie);
+    int targetpos = 0;
+    int listcount = 0;
+    int errcode = LDAP_SUCCESS;
+    ldap_parse_vlvresponse_control(c->ld, control, &targetpos, &listcount, &context, &errcode);
+    
+    js_result->Set(String::New("offset"), Integer::New(targetpos));
+    js_result->Set(String::New("count"), Integer::New(listcount));
     
     /* Determine if the cookie is not empty, indicating there are more pages for these search parameters. */
-    if (cookie.bv_val != NULL && (strlen(cookie.bv_val) > 0)) {
-      morePages = 1;
-      js_result->Set(String::New("bv_len"), Integer::New(cookie.bv_len));
+    if (context != NULL && context->bv_val != NULL && (strlen(context->bv_val) > 0)) {
+      js_result->Set(String::New("bv_len"), Integer::New(context->bv_len));
       
-      int bv_len = cookie.bv_len;
+      int bv_len = context->bv_len;
+      char *_bv_val = context->bv_val;
       Local<Array> bv_val = Array::New(bv_len);
       for(int i = 0; i < bv_len; i++) {
-        bv_val->Set(Integer::New(i), Uint32::New(cookie.bv_val[i]));
+        bv_val->Set(Integer::New(i), Uint32::New((unsigned char) _bv_val[i]));
       }
       
       js_result->Set(String::New("bv_val"), bv_val);
-    } else {
-      morePages = 0;
     }
     
     control = NULL;

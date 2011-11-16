@@ -345,8 +345,8 @@ function test11() {
   var aliasdn= 'ou=alias,dc=sample,dc=com';
   var count = 0;
   var aliasCount = 0;
-  var maxConnection = 100; // maximum should not be more than 100
-  var multiplier = 100;
+  var maxConnection = 10; // maximum should not be more than 100
+  var multiplier = 10;
   var max = maxConnection * multiplier;
   var start;
   var connectionList = [];
@@ -390,7 +390,7 @@ function test11() {
                 { type: 'cn',
                   vals: ['user' + k] },
                 { type: 'sn',
-                  vals: ['test']}
+                  vals: ['test' + k]}
               ], userAdded);
               
               ldap.add('cn=user' + k + ',' + aliasdn, [
@@ -461,7 +461,7 @@ function test11() {
       console.log('simple search: ' + simpleSum + ' (' + (simpleSum/max) + ' avg.)');
       console.log('alias search: ' + aliasSum + ' (' + (aliasSum/max) + ' avg.)');
       printOK('test11');
-      done();
+      test12();
       return;
     }
     
@@ -477,6 +477,58 @@ function test11() {
       });
     });
   }
+}
+
+function test12() {
+  var dn = 'ou=tests,dc=sample,dc=com';
+  // ldap.search(dn, ldap.SUBTREE, 'objectClass=*', '*', function(msgId, err, res, cookie) {
+    // assert.ok(!err, err);
+    // console.log(res, cookie);
+    // ldap.search(dn, ldap.SUBTREE, 'objectClass=*', '*', function(msgId, err, res, cookie) {
+      // assert.ok(!err, err);
+      // console.log('page2', res, cookie);
+      // // ldap.close();
+    // });
+  // });
+  
+  var pageSize1 = 20;
+  var pageSize2 = 5;
+  var offset1 = 1;
+  var offset2 = offset1 + pageSize1;
+  ldap.pagedSearch(dn, ldap.SUBTREE, 'cn=*', '*', {
+    pageSize: pageSize1,
+    offset: offset1,
+    sortString: 'cn:caseIgnoreOrderingMatch'
+  }, function(msgId, err, res, context) {
+    assert.ok(!err, err);
+    
+    console.log(res, context, res.length);
+    
+    assert.ok(context);
+    assert.ok(context.bv_val);
+    assert.equal(res.length, pageSize1)
+    assert.equal(context.offset, offset1);
+    
+    ldap.pagedSearch(dn, ldap.SUBTREE, 'cn=*', '*', {
+      offset: offset2,
+      pageSize: pageSize2,
+      context: context,
+      sortString: 'cn:caseIgnoreOrderingMatch'
+    }, function(msgId, err, res, context) {
+      assert.ok(!err, err);
+      
+      console.log('page2', res, context, res.length);
+      
+      assert.ok(context);
+      assert.ok(context.bv_val);
+      assert.equal(res.length, Math.min(pageSize2, 100 - offset2 + 1));
+      assert.equal(context.offset, offset2);
+      ldap.close();
+      printOK('test12');
+      done();
+      // setTimeout(function () { console.log(555); }, 60000);
+    });
+  });
 }
 
 function done() {

@@ -56,15 +56,7 @@ var Connection = function() {
     };
     
     self.pagedSearch = function(base, scope, filter, attrs, pageOption, CB) {
-      var option = {
-        pageSize: pageOption.pageSize        
-      };
-      
-      if('cookie' in pageOption) {
-        option.cookie = pageOption.cookie;
-      }
-      
-      var msgid = binding.pagedSearch(base, scope, filter, attrs, option);
+      var msgid = binding.pagedSearch(base, scope, filter, attrs, pageOption);
       self.setCallback(msgid, CB);
     };
 
@@ -101,11 +93,11 @@ var Connection = function() {
         binding.close();
     }
 
-    binding.addListener("searchresult", function(msgid, result, data, cookie) {
+    binding.addListener("searchresult", function(msgid, result, data, context) {
         // result contains the LDAP response type. It's unused.
         if (callbacks[msgid]) {
             clearTimeout(callbacks[msgid].tm);
-            callbacks[msgid].cb(msgid, null, data, cookie);
+            callbacks[msgid].cb(msgid, null, data, context);
             delete(callbacks[msgid]);
         }
     });
