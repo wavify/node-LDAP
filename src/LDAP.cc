@@ -359,7 +359,7 @@ public:
     vlvInfo.ldvlv_context = contextPtr;
     vlvInfo.ldvlv_count = 0;
     vlvInfo.ldvlv_extradata = NULL;
-    vlvInfo.ldvlv_offset = offset->IsUndefined() ? 0 : offset->Int32Value();
+    vlvInfo.ldvlv_offset = (offset->IsUndefined() ? 0 : offset->Int32Value()) + 1; // convert zero-based offset to one-based
     // vlvInfo.ldvlv_version = LDAP_VLVINFO_VERSION; // Somehow ldapsearch.c just left this field out. Maybe it's not used
     l_rc = ldap_create_vlv_control(c->ld, &vlvInfo, &vlvControl);
     controls[ctrlCount++] = vlvControl;
