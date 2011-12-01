@@ -736,7 +736,7 @@ public:
     int errcode = LDAP_SUCCESS;
     ldap_parse_vlvresponse_control(c->ld, control, &targetpos, &listcount, &context, &errcode);
     
-    js_result->Set(String::New("offset"), Integer::New(targetpos));
+    js_result->Set(String::New("offset"), Integer::New(targetpos) - 1);
     js_result->Set(String::New("count"), Integer::New(listcount));
     
     /* Determine if the cookie is not empty, indicating there are more pages for these search parameters. */
