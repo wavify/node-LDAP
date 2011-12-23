@@ -25,7 +25,7 @@ var Connection = function() {
                 callbacks[msgid] = {
                   cb: CB,
                   tm: setTimeout(function() {
-                      CB(msgid, new Error('Request timed out', -2));
+                      CB(msgid, new Error(-2)); //Request timed out
                       delete callbacks[msgid];
                   }, self.querytimeout || querytimeout)
                 };
@@ -33,7 +33,7 @@ var Connection = function() {
         } else {
             // msgid is -1, which means an error. We won't add the callback to the array,
             // instead, call the callback immediately.
-            CB(msgid, new Error('LDAP Error', -1)); //TODO: expose a way to get the specific error
+            CB(msgid, new Error(-1)); //LDAP Error, TODO: expose a way to get the specific error
         }
     };
 
