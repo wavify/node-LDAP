@@ -170,11 +170,21 @@ function test6() {
 function test7() {
   setTimeout(function() {
     assert.ok(disconnected);
-    ldap.search('dc=sample,dc=com', ldap.SUBTREE, 'cn=Babs Jensen', '*', function(msgId, err, res) {
-      assert.ok(!err, deepInspect(arguments));
-      printOK('test7');
-      test8();
-    });
+    ldap.close();
+    
+    ldapInit(bound);
+    
+    function bound(err, cnx) {
+      assert.ok(!err);
+      
+      ldap = cnx;
+      
+      ldap.search('dc=sample,dc=com', ldap.SUBTREE, 'cn=Babs Jensen', '*', function(msgId, err, res) {
+        assert.ok(!err, deepInspect(arguments));
+        printOK('test7');
+        test8();
+      });
+    }
   }, 5000);
 }
 
@@ -431,7 +441,13 @@ function test11() {
       ldap.close();
     });
     
-    individualTest(0);
+    ldap.close(); // close timed out ldap connection
+    ldapInit(function bound(err, cnx) {
+      assert.ok(!err);
+      ldap = cnx;
+      individualTest(0);
+    });
+    
     
     // printOK('test11');
     // done();
@@ -491,29 +507,29 @@ function test12() {
     // });
   // });
   
-  var pageSize1 = 20;
+  var pageSize1 = 2;
   var pageSize2 = 5;
-  var offset1 = 1;
+  var offset1 = 30;
   var offset2 = offset1 + pageSize1;
-  ldap.pagedSearch(dn, ldap.SUBTREE, 'cn=*', '*', {
+  ldap.pagedSearch(dn, ldap.SUBTREE, 'cn=user*', '*', {
     pageSize: pageSize1,
     offset: offset1,
-    sortString: 'cn:caseIgnoreOrderingMatch'
+    sortString: '-cn:caseIgnoreOrderingMatch'
   }, function(msgId, err, res, context) {
     assert.ok(!err, err);
     
     console.log(res, context, res.length);
     
     assert.ok(context);
-    assert.ok(context.bv_val);
+    assert.ok(context.bv_val, context);
     assert.equal(res.length, pageSize1)
     assert.equal(context.offset, offset1);
     
-    ldap.pagedSearch(dn, ldap.SUBTREE, 'cn=*', '*', {
+    ldap.pagedSearch(dn, ldap.SUBTREE, 'cn=user*', '*', {
       offset: offset2,
       pageSize: pageSize2,
       context: context,
-      sortString: 'cn:caseIgnoreOrderingMatch'
+      sortString: '-cn:caseIgnoreOrderingMatch'
     }, function(msgId, err, res, context) {
       assert.ok(!err, err);
       
