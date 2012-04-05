@@ -1,8 +1,19 @@
-var ldapbinding = require("./build/default/LDAP");
+var events = require('events');
+
+var LDAPConnection = require("./build/Release/LDAP").LDAPConnection;
+
+// extend prototype
+var inherits = function (target, source) {
+  for (var k in source.prototype) {
+    target.prototype[k] = source.prototype[k];
+  }
+}
+
+inherits(LDAPConnection, events.EventEmitter);
 
 var Connection = function() {
     var callbacks = {};
-    var binding = new ldapbinding.LDAPConnection();
+    var binding = new LDAPConnection();
     var self = this;
     var querytimeout = 5000;
     var totalqueries = 0;
