@@ -210,7 +210,7 @@ public:
     ARG_STR(attrs_str,    3);
 
     if (c->ld == NULL) {
-      EMITDISCONNECT(c)
+      c->Close(args);
       RETURN_INT(LDAP_SERVER_DOWN);
     }
 
@@ -255,7 +255,7 @@ public:
     ARG_INT(opt_deref,  4);
     
     if (c->ld == NULL) {
-      EMITDISCONNECT(c)
+      c->Close(args);
       RETURN_INT(LDAP_SERVER_DOWN);
     }
     
@@ -310,7 +310,7 @@ public:
     ARG_OBJECT(pageOption,    4);
     
     if (c->ld == NULL) {
-      EMITDISCONNECT(c)
+      c->Close(args);
       RETURN_INT(LDAP_SERVER_DOWN);
     }
     
@@ -429,7 +429,7 @@ public:
     ARG_ARRAY(modsHandle, 1);
 
     if (c->ld == NULL) {
-      EMITDISCONNECT(c)
+      c->Close(args);
       RETURN_INT(-1);
     }
 
@@ -483,7 +483,7 @@ public:
     msgid = ldap_modify(c->ld, *dn, ldapmods);
 
     if (msgid == LDAP_SERVER_DOWN) {
-      EMITDISCONNECT(c)
+      c->Close(args);
       RETURN_INT(-1);
     }
 
@@ -551,7 +551,7 @@ public:
     ev_io_start(EV_DEFAULT_ &(c->read_watcher_));
 
     if (msgid == LDAP_SERVER_DOWN) {
-      EMITDISCONNECT(c)
+      c->Close(args);
     }
 
     ldap_mods_free(ldapmods, 1);
@@ -581,7 +581,7 @@ public:
     }
 
     if ((msgid = ldap_delete(c->ld, dn)) == LDAP_SERVER_DOWN) {
-      EMITDISCONNECT(c)
+      c->Close(args);
     } else {
       ldap_get_option(c->ld, LDAP_OPT_DESC, &fd);    
       ev_io_set(&(c->read_watcher_), fd, EV_READ);
@@ -612,12 +612,12 @@ public:
     //    ARG_BOOL(deleteoldrdn, 3);
 
     if (c->ld == NULL) {
-      EMITDISCONNECT(c)
+      c->Close(args);
       RETURN_INT(LDAP_SERVER_DOWN);
     }
 
     if ((msgid = ldap_modrdn(c->ld, *dn, *newrdn) == LDAP_SERVER_DOWN)) {
-      EMITDISCONNECT(c)
+      c->Close(args);
       RETURN_INT(LDAP_SERVER_DOWN);
     }
 
@@ -655,7 +655,7 @@ public:
     }
     
     if ((msgid = ldap_simple_bind(c->ld, binddn, password)) == LDAP_SERVER_DOWN) {
-      EMITDISCONNECT(c)
+      c->Close(args);
     } else {
       ldap_get_option(c->ld, LDAP_OPT_DESC, &fd);    
       ev_io_set(&(c->read_watcher_), fd, EV_READ);
@@ -811,6 +811,10 @@ public:
     res = ldap_result(c->ld, LDAP_RES_ANY, 1, &ldap_tv, &ldap_res);
     if (res < 1) {
       if (res < 0) {
+        c->ld = NULL;
+
+        ev_io_stop(EV_DEFAULT_ &(c->read_watcher_));
+
         EMITDISCONNECT(c)
       }
       return;
