@@ -95,6 +95,11 @@ var Connection = function() {
         var msgid = binding.modify(dn, data);
         return self.setCallback(msgid, CB);
     };
+    
+    self.rename = function(dn, newrdn, CB) {
+        var msgid = binding.rename(dn, newrdn);
+        return self.setCallback(msgid, CB);
+    };
 
     self.addListener = function(event, CB) {
         binding.addListener(event, CB);

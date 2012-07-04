@@ -604,11 +604,11 @@ public:
     ENFORCE_ARG_LENGTH(2, "Invalid number of arguments to Rename()");
     ENFORCE_ARG_STR(0);
     ENFORCE_ARG_STR(1);
-    ENFORCE_ARG_STR(2);
-    ENFORCE_ARG_BOOL(3);
+//    ENFORCE_ARG_STR(2);
+//    ENFORCE_ARG_BOOL(3);
     ARG_STR(dn, 0);
     ARG_STR(newrdn, 1);
-    ARG_STR(newparent, 2);
+    //    ARG_STR(newparent, 2);
     //    ARG_BOOL(deleteoldrdn, 3);
 
     if (c->ld == NULL) {
@@ -616,7 +616,7 @@ public:
       RETURN_INT(LDAP_SERVER_DOWN);
     }
 
-    if ((msgid = ldap_modrdn(c->ld, *dn, *newrdn) == LDAP_SERVER_DOWN)) {
+    if ((msgid = ldap_modrdn(c->ld, *dn, *newrdn)) == LDAP_SERVER_DOWN) {
       c->Close(args);
       RETURN_INT(LDAP_SERVER_DOWN);
     }

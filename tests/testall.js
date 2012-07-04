@@ -521,7 +521,7 @@ function test12() {
     console.log(res, context, res.length);
     
     assert.ok(context);
-    assert.ok(context.bv_val, context);
+    assert.ok(context.bv_val, util.inspect(context));
     assert.equal(res.length, pageSize1)
     assert.equal(context.offset, offset1);
     
@@ -539,12 +539,37 @@ function test12() {
       assert.ok(context.bv_val);
       assert.equal(res.length, Math.min(pageSize2, 100 - offset2 + 1));
       assert.equal(context.offset, offset2);
-      ldap.close();
+      // ldap.close();
       printOK('test12');
-      done();
+      test13();
       // setTimeout(function () { console.log(555); }, 60000);
     });
   });
+}
+
+function test13() {
+  var olddn = 'cn=Barbara Jensen,dc=sample,dc=com';
+  var newrdn = 'cn=BJ';
+  var oldparent = ldapConfig.base;
+  
+  ldap.rename(olddn, newrdn, function(msgId, err) {
+    assert.ok(!err, err);
+    
+    ldap.search(olddn, ldap.BASE, 'objectClass=*', '*', function(msgId, err, res) {
+      assert.ok(err, res);
+      assert.ok(32, err);
+      
+      var newdn = newrdn + ',' + oldparent;
+      ldap.search(newdn, ldap.BASE, 'objectClass=*', '*', function(msgId, err, res) {
+        assert.ok(!err, err);
+        assert.equal(1, res.length);
+        assert.equal('BJ', res[0].cn[0]);
+        assert.equal(newdn, res[0].dn);
+        printOK('test13');
+        done();
+      });
+    });
+  })
 }
 
 function done() {
