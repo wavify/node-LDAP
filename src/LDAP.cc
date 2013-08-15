@@ -110,7 +110,7 @@ typedef enum {
 
 #define EMITSEARCHRESULT(c, argv) {                                     \
   TryCatch tc;                                                          \
-  c->searchresult_cb->Call(Context::GetCurrent()->Global(), 4, argv);   \
+  c->searchresult_cb->Call(Context::GetCurrent()->Global(), 5, argv);   \
     if (tc.HasCaught()) {                                               \
       FatalException(tc);                                               \
     }                                                                   \
@@ -342,11 +342,13 @@ public:
   NODE_METHOD(Search) {
     HandleScope scope;
     GETOBJ(c);
-    int msgid, rc;
+    int msgid, rc, ctrlCount = 0;
     char * attrs[255];
     char ** ap;
-    LDAPControl* serverCtrls[2] = { NULL, NULL };
+    LDAPControl* serverCtrls[3] = { NULL, NULL, NULL };
     int page_size = 0;
+    int page_offset = 0;
+    char * sort_str = NULL;
     Local<Object> cookieObj;
     struct berval* cookie = NULL;
 
@@ -383,6 +385,15 @@ public:
       RETURN_INT(LDAP_SERVER_DOWN);
     }
 
+    if (!(args[6]->IsUndefined())) {
+      // this is a vlv search
+      page_offset = args[6]->Int32Value();
+    }
+    if (args[7]->IsString()) {
+      String::Utf8Value sortString(args[7]);
+      sort_str = strdup(*sortString);
+    }
+
     char *bufhead = strdup(*attrs_str);
     char *buf = bufhead;
 
@@ -391,9 +402,53 @@ public:
         if (++ap >= &attrs[255])
           break;
 
-    if (page_size > 0) {
-      rc = ldap_create_page_control(c->ld, page_size, cookie, 'F', &serverCtrls[0]);
+    if (sort_str) {
+      LDAPSortKey **sortKeyList = NULL;
+      rc = ldap_create_sort_keylist(&sortKeyList, sort_str);
+      
+      free(sort_str);
+      sort_str = NULL;
 
+      if (sortKeyList) {
+        // create sort control
+        rc = ldap_create_sort_control(c->ld, sortKeyList, 0, &serverCtrls[ctrlCount++]);
+        // free key list
+        ldap_free_sort_keylist(sortKeyList);
+        sortKeyList = NULL;
+      }
+      if (rc != LDAP_SUCCESS) {
+        if (cookie) {
+          ber_bvfree(cookie);
+          cookie = NULL;
+        }
+        free(bufhead);
+        RETURN_INT(-1);
+      }
+    }
+
+    if (page_offset > 0 || sort_str) {
+      // vlv must be used if offset or sort string is specified
+      LDAPVLVInfo vlvInfo;
+      vlvInfo.ldvlv_after_count = (page_size > 0 ? page_size : 10) - 1;
+      vlvInfo.ldvlv_attrvalue = NULL;
+      vlvInfo.ldvlv_before_count = 0;
+      vlvInfo.ldvlv_context = cookie;
+      vlvInfo.ldvlv_count = 0;
+      vlvInfo.ldvlv_extradata = NULL;
+      // convert zero-based offset to one-based
+      vlvInfo.ldvlv_offset = (page_offset > 0 ? page_offset : 0) + 1;
+      // vlvInfo.ldvlv_version = LDAP_VLVINFO_VERSION; // Somehow ldapsearch.c just left this field out. Maybe it's not used
+      rc = ldap_create_vlv_control(c->ld, &vlvInfo, &serverCtrls[ctrlCount++]);
+      if (cookie) {
+        ber_bvfree(cookie);
+        cookie = NULL;
+      }
+      if (rc != LDAP_SUCCESS) {
+        free(bufhead);
+        RETURN_INT(-1);
+      }
+    } else if (page_size > 0) {
+      rc = ldap_create_page_control(c->ld, page_size, cookie, 0, &serverCtrls[ctrlCount++]);
       if (cookie) {
         ber_bvfree(cookie);
         cookie = NULL;
@@ -411,9 +466,10 @@ public:
     rc = ldap_search_ext(c->ld, *base, searchscope, *filter, attrs, 0,
                          serverCtrls, NULL, NULL, 0, &msgid);
 
-    if (serverCtrls[0]) {
-      ldap_control_free(serverCtrls[0]);
+    while (ctrlCount) {
+      ldap_control_free(serverCtrls[--ctrlCount]);
     }
+
     if (LDAP_API_ERROR(rc)) {
       msgid = -1;
     } 
@@ -851,8 +907,51 @@ public:
       case LDAP_RES_SEARCH_RESULT:
         if (srv_controls) {
           struct berval* cookie = NULL;
+          int rc;
+          LDAPControl* control = NULL;
+          Local<Object> pageResult = Object::New();
 
-          ldap_parse_page_control(c->ld, srv_controls, NULL, &cookie);
+          control = ldap_control_find(LDAP_CONTROL_SORTRESPONSE, srv_controls, NULL);
+          if (control) {
+            Local<Object> sortResult = Object::New();
+            ber_int_t sort_rc = 0;
+            char *error_attr = NULL;
+            rc = ldap_parse_sortresponse_control(c->ld, control, &sort_rc, &error_attr);
+            if (rc == LDAP_SUCCESS) {
+              sortResult->Set(String::New("returnCode"), Integer::New(sort_rc));
+              if (error_attr) {
+                sortResult->Set(String::New("errorAttr"), String::New(error_attr));
+                ldap_memfree(error_attr);
+                error_attr = NULL;
+              }
+              pageResult->Set(String::New("sort"), sortResult);
+            }
+            control = NULL;
+          }
+
+          int pos = 0;
+          int count = 0;
+          int errcode = LDAP_SUCCESS;
+          if ( (control = ldap_control_find(LDAP_CONTROL_VLVRESPONSE, srv_controls, NULL)) ) {
+            rc = ldap_parse_vlvresponse_control(c->ld, control, &pos, &count, &cookie, &errcode);
+            if (rc == LDAP_SUCCESS) {
+              pageResult->Set(String::New("offset"), Integer::New(pos - 1));
+              pageResult->Set(String::New("count"), Integer::New(count));
+              pageResult->Set(String::New("vlvReturnCode"), Integer::New(errcode));
+            }
+            control = NULL;
+          } else if ( (control = ldap_control_find(LDAP_CONTROL_PAGEDRESULTS, srv_controls, NULL)) ) {
+#if LDAP_DEPRECATED
+            rc = ldap_parse_page_control(c->ld, srv_controls, &count, &cookie);
+#else
+            rc = ldap_parse_pageresponse_control(c->ld, control, &count, &cookie);
+#endif
+            if (rc == LDAP_SUCCESS) {
+              pageResult->Set(String::New("count"), Integer::New(count));
+            }
+            control = NULL;
+          }
+          
           if (!cookie || cookie->bv_val == NULL || !*cookie->bv_val) {
             if (cookie) {
               ber_bvfree(cookie);
@@ -863,8 +962,13 @@ public:
             cookieObj->SetPointerInInternalField(0, cookie);
             args[3] = cookieObj;
           }
+          args[4] = pageResult;
+
+          ldap_controls_free(srv_controls);
+          srv_controls = NULL;
         } else {
           args[3] = Undefined();
+          args[4] = Undefined();
         }
 
         args[0] = Integer::New(msgid);
