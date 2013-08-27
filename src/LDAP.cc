@@ -944,7 +944,8 @@ public:
 #if LDAP_DEPRECATED
             rc = ldap_parse_page_control(c->ld, srv_controls, &count, &cookie);
 #else
-            rc = ldap_parse_pageresponse_control(c->ld, control, &count, &cookie);
+            cookie = (struct berval *) malloc( sizeof( struct berval ) );
+            rc = ldap_parse_pageresponse_control(c->ld, control, &count, cookie);
 #endif
             if (rc == LDAP_SUCCESS) {
               pageResult->Set(String::New("count"), Integer::New(count));
