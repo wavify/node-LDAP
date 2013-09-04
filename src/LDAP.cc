@@ -425,8 +425,8 @@ public:
       }
     }
 
-    if (page_offset > 0 || sort_str) {
-      // vlv must be used if offset or sort string is specified
+    if (page_offset > 0 || ctrlCount) {
+      // vlv must be used if offset is specified or sort control is used
       LDAPVLVInfo vlvInfo;
       vlvInfo.ldvlv_after_count = (page_size > 0 ? page_size : 10) - 1;
       vlvInfo.ldvlv_attrvalue = NULL;
