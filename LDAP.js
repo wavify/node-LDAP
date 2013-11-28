@@ -91,7 +91,7 @@ var LDAP = function(opts) {
             process.nextTick(function() {
                 fn(new LDAPError('LDAP Error ' + binding.err2string(), msgid, msgid));
             });
-            reconnect();
+            if (!opts.noreconnect) reconnect();
         }
         return msgid;
     }
@@ -346,7 +346,7 @@ var LDAP = function(opts) {
         },function(msgid, errcode, data, cookie, pageResult) {
             //searchresult callback
             stats.searchresults++;
-            handleCallback(msgid, (errcode?new Error(binding.err2string(errcode)):undefined), data, cookie, pageResult);
+            handleCallback(msgid, (errcode?new LDAPError(binding.err2string(errcode), msgid, errcode):undefined), data, cookie, pageResult);
         }, function(msgid, errcode, data) {
             //result callback
             stats.results++;
