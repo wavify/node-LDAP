@@ -9,6 +9,89 @@ var schema;
 
 var tests = [
     {
+        name: 'SERVERCONTROL - ManageDSAIT remove',
+        description: 'Remove with ManageDSAIT control',
+        fn: function() {
+            ldap.remove('ou=referral,dc=sample,dc=com', function(err, data) {
+                assert(err, 'Remove referral should error (removing non-leaf)');
+                assert(err.code == 66);
+                ldap.remove('ou=referral,dc=sample,dc=com', [ ldap.CONTROL_MANAGEDSAIT ], function(err) {
+                    assert(!err, 'Remove with control failed');
+                    next();
+                });
+            });
+        }
+    },
+    {
+        name: 'SERVERCONTROL - ManageDSAIT modify',
+        description: 'Modify with ManageDSAIT control',
+        fn: function() {
+            ldap.modify('ou=referral,dc=sample,dc=com',
+                        [
+                            { attr: 'description',           vals: [ 'desc' ] }
+                        ], function(err) {
+                            assert(!err, 'Modify failed');
+                            ldap.modify('ou=referral,dc=sample,dc=com',
+                                        [
+                                            { attr: 'description', vals: [ 'desc2' ] }
+                                        ], [ ldap.CONTROL_MANAGEDSAIT ], function(err, data) {
+                                            assert(!err, 'Modify with control failed');
+                                            ldap.search({
+                                                base: 'ou=referral,dc=sample,dc=com',
+                                                scope: ldap.BASE
+                                            }, function(err, data) {
+                                                assert(!err, 'Get referral failed');
+                                                assert(data.length == 1);
+                                                assert(data[0].description);
+                                                assert(data[0].description[0] == 'desc');
+                                                ldap.search({
+                                                    base: 'ou=referral,dc=sample,dc=com',
+                                                    controls: [ ldap.CONTROL_MANAGEDSAIT ]
+                                                }, function(err, data) {
+                                                    assert(!err, 'Get referral with control failed');
+                                                    assert(data.length == 1);
+                                                    assert(data[0].description);
+                                                    assert(data[0].description[0] == 'desc2');
+                                                    next();
+                                                });
+                                            });
+                                        });
+                        });
+        }
+    },
+    {
+        name: 'SERVERCONTROL - ManageDSAIT search',
+        description: 'Search with ManageDSAIT control',
+        fn: function() {
+            ldap.add('ou=referral,dc=sample,dc=com',
+                     [
+                         { attr: 'objectClass',  vals: [ 'extensibleObject', 'referral', 'top' ] },
+                         { attr: 'ou',           vals: [ 'referral' ] },
+                         { attr: 'ref',           vals: [ 'ldap://localhost:1234/ou=accounting,dc=sample,dc=com' ] }
+                     ], function(err, data) {
+                         assert(!err, 'Add failed');
+                         ldap.search({
+                            base: 'ou=referral,dc=sample,dc=com',
+                            scope: ldap.SUBTREE,
+                            filter: 'objectClass=*'
+                         }, function(err, data) {
+                            assert(!err, 'Search failed ');
+                            assert(data.length == 2);
+                            ldap.search({
+                                base: 'ou=referral,dc=sample,dc=com',
+                                scope: ldap.SUBTREE,
+                                filter: 'objectClass=*',
+                                controls: [ ldap.CONTROL_MANAGEDSAIT ]
+                            }, function(err, data) {
+                                assert(!err, 'Search with control failed')
+                                assert(data.length == 1);
+                                next();
+                            });
+                         })
+                     });
+        }
+    },
+    {
         name: 'FINDREMOVED - Notfound',
         description: 'Find a recently removed record',
         fn: function() {

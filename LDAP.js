@@ -59,6 +59,8 @@ var LDAP = function(opts) {
     self.SUBORDINATE = 3;
     self.DEFAULT = -1;
 
+    self.CONTROL_MANAGEDSAIT = 'manageDSAit';
+
     self.LDAP_SYNC_PRESENT = 0;
     self.LDAP_SYNC_ADD = 1;
     self.LDAP_SYNC_MODIFY = 2;
@@ -267,41 +269,59 @@ var LDAP = function(opts) {
         return setCallback(binding.search(s_opts.base,
                                           (typeof s_opts.scope == 'number')?s_opts.scope:self.SUBTREE,
                                           s_opts.filter?s_opts.filter:'(objectClass=*)',
-                                          s_opts.attrs?s_opts.attrs:'*', s_opts.pagesize,
+                                          s_opts.attrs?s_opts.attrs:'*',
+                                          s_opts.controls || [],
+                                          s_opts.pagesize,
                                           s_opts.cookie),
                                           search, arguments, fn);
     }
 
-    function modify(dn, mods, fn) {
+    function modify(dn, mods, controls, fn) {
         if (!dn || typeof mods != 'object') {
             throw new Error('modify requires a dn and an array of modifications');
         }
+        if (typeof controls === 'function') {
+            fn = controls;
+            controls = [];
+        }
         stats.modifies++;
-        return setCallback(binding.modify(dn, mods), modify, arguments, fn);
+        return setCallback(binding.modify(dn, mods, controls), modify, arguments, fn);
     }
 
-    function add(dn, attrs, fn) {
+    function add(dn, attrs, controls, fn) {
         if (!dn || typeof attrs != 'object') {
             throw new Error('add requires a dn and an array of attributes');
         }
+        if (typeof controls === 'function') {
+            fn = controls;
+            controls = [];
+        }
         stats.adds++;
-        return setCallback(binding.add(dn, attrs), add, arguments, fn);
+        return setCallback(binding.add(dn, attrs, controls), add, arguments, fn);
     }
 
-    function remove(dn, fn) {
+    function remove(dn, controls, fn) {
         if (!dn) {
             throw new Error('remove requires a dn');
         }
+        if (typeof controls === 'function') {
+            fn = controls;
+            controls = [];
+        }
         stats.removes++;
-        return setCallback(binding.remove(dn), remove, arguments, fn);
+        return setCallback(binding.remove(dn, controls), remove, arguments, fn);
     }
 
-    function rename(dn, newrdn, fn) {
+    function rename(dn, newrdn, controls, fn) {
         if (!dn || !newrdn) {
             throw new Error('rename requires a dn and newrdn');
         }
+        if (typeof controls === 'function') {
+            fn = controls;
+            controls = [];
+        }
         stats.renames++;
-        return setCallback(binding.rename(dn, newrdn), rename, arguments, fn);
+        return setCallback(binding.rename(dn, newrdn, controls), rename, arguments, fn);
     }
 
     function setcallbacks() {

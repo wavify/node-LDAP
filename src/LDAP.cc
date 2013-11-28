@@ -344,6 +344,40 @@ public:
     RETURN_INT(0);
   }
 
+  static int parseServerControls(Local<Array> controls, LDAPControl **ctrls, int *countp) {
+    int rc = LDAP_SUCCESS;
+    int count = 0;
+    for (int i = 0, n = controls->Length(); i < n; i++) {
+      Local<Value> val = controls->Get(i);
+      char *oid = NULL;
+      Local<Value> ctrlValue;
+      int crit = 0;
+      
+      if (val->IsString()) {
+        oid = *(String::Utf8Value(val));
+      } else if (val->IsArray()) {
+        Local<Array> arr = Local<Array>::Cast(val);
+        if (arr->Get(0)->IsString()) {
+          oid = *(String::Utf8Value(arr->Get(0)));
+        }
+        ctrlValue = arr->Get(1);
+      }
+      
+      if (oid) {
+        if (oid[0] == '!') {
+          crit = 1;
+          oid++;
+        }
+        
+        if (strcasecmp(oid, "manageDSAit") == 0) {
+          rc = ldap_control_create(LDAP_CONTROL_MANAGEDSAIT, crit, NULL, 0, &ctrls[count++]);
+          break;
+        }
+      }
+    }
+    *countp = count;
+    return rc;
+  }
 
   NODE_METHOD(Search) {
     HandleScope scope;
@@ -351,24 +385,26 @@ public:
     int msgid, rc;
     char * attrs[255];
     char ** ap;
-    LDAPControl* serverCtrls[2] = { NULL, NULL };
+    LDAPControl** serverCtrls;
+    int ctrlCount = 0;
     int page_size = 0;
     Local<Object> cookieObj;
     struct berval* cookie = NULL;
-
+    
     ARG_STR(base,         0);
     ARG_INT(searchscope,  1);
     ARG_STR(filter,       2);
     ARG_STR(attrs_str,    3);
+    ARG_ARRAY(controls,   4);
 
-    if (!(args[4]->IsUndefined())) {
+    if (!(args[5]->IsUndefined())) {
       // this is a paged search
-      page_size = args[4]->Int32Value();
-      if (!(args[5]->IsUndefined())) {
-        if (!args[5]->IsObject()) {
+      page_size = args[5]->Int32Value();
+      if (!(args[6]->IsUndefined())) {
+        if (!args[6]->IsObject()) {
           RETURN_INT(-1);
         }
-        cookieObj = args[5]->ToObject();
+        cookieObj = args[6]->ToObject();
         if (cookieObj->InternalFieldCount() != 1) {
           RETURN_INT(-1);
         }
@@ -397,14 +433,25 @@ public:
         if (++ap >= &attrs[255])
           break;
 
+    // Initialize server controls
+    serverCtrls = (LDAPControl **) calloc(controls->Length() + 2, sizeof(LDAPControl *));
+    rc = parseServerControls(controls, serverCtrls, &ctrlCount);
+    
+    if (rc != LDAP_SUCCESS) {
+      ldap_controls_free(serverCtrls);
+      free(bufhead);
+      RETURN_INT(-1);
+    }
+    
     if (page_size > 0) {
-      rc = ldap_create_page_control(c->ld, page_size, cookie, 'F', &serverCtrls[0]);
+      rc = ldap_create_page_control(c->ld, page_size, cookie, 'F', &serverCtrls[ctrlCount++]);
 
       if (cookie) {
         ber_bvfree(cookie);
         cookie = NULL;
       }
       if (rc != LDAP_SUCCESS) {
+        ldap_controls_free(serverCtrls);
         free(bufhead);
         RETURN_INT(-1);
       }
@@ -416,10 +463,9 @@ public:
 
     rc = ldap_search_ext(c->ld, *base, searchscope, *filter, attrs, 0,
                          serverCtrls, NULL, NULL, 0, &msgid);
-
-    if (serverCtrls[0]) {
-      ldap_control_free(serverCtrls[0]);
-    }
+    
+    ldap_controls_free(serverCtrls);
+    
     if (LDAP_API_ERROR(rc)) {
       msgid = -1;
     }
@@ -452,10 +498,18 @@ public:
 
     ARG_STR(dn, 0);
     ARG_ARRAY(modsHandle, 1);
+    ARG_ARRAY(controls, 2);
 
     if (c->ld == NULL) {
       close(c);
       RETURN_INT(LDAP_SERVER_DOWN);
+    }
+    
+    LDAPControl **serverCtrls = (LDAPControl **) calloc(controls->Length() + 1, sizeof(LDAPControl *));
+    int ctrlCount = 0;
+    if (parseServerControls(controls, serverCtrls, &ctrlCount) != LDAP_SUCCESS) {
+      ldap_controls_free(serverCtrls);
+      RETURN_INT(-1);
     }
 
     int numOfMods = modsHandle->Length();
@@ -504,13 +558,15 @@ public:
     }
 
     ldapmods[numOfMods] = NULL;
-
-    msgid = ldap_modify(c->ld, *dn, ldapmods);
+    
+    ldap_modify_ext(c->ld, *dn, ldapmods, serverCtrls, NULL, &msgid);
 
     if (msgid == LDAP_SERVER_DOWN) {
       close(c);
-      RETURN_INT(LDAP_SERVER_DOWN);
     }
+    
+    ldap_controls_free(serverCtrls);
+    ldap_mods_free(ldapmods, 1);
 
     RETURN_INT(msgid);
   }
@@ -524,8 +580,16 @@ public:
 
     ARG_STR(dn, 0);
     ARG_ARRAY(attrsHandle, 1);
+    ARG_ARRAY(controls, 2);
 
     if (c->ld == NULL) RETURN_INT(LDAP_SERVER_DOWN);
+    
+    LDAPControl **serverCtrls = (LDAPControl **) calloc(controls->Length() + 1, sizeof(LDAPControl *));
+    int ctrlCount = 0;
+    if (parseServerControls(controls, serverCtrls, &ctrlCount) != LDAP_SUCCESS) {
+      ldap_controls_free(serverCtrls);
+      RETURN_INT(-1);
+    }
 
     int numOfAttrs = attrsHandle->Length();
     for (int i = 0; i < numOfAttrs; i++) {
@@ -566,13 +630,14 @@ public:
 
     ldapmods[numOfAttrs] = NULL;
 
-    msgid = ldap_add(c->ld, *dn, ldapmods);
+    ldap_add_ext(c->ld, *dn, ldapmods, serverCtrls, NULL, &msgid);
     ldap_get_option(c->ld, LDAP_OPT_DESC, &fd);
 
     if (msgid == LDAP_SERVER_DOWN) {
       close(c);
     }
 
+    ldap_controls_free(serverCtrls);
     ldap_mods_free(ldapmods, 1);
 
     RETURN_INT(msgid);
@@ -586,15 +651,25 @@ public:
     int fd;
 
     ARG_STR(dn, 0);
+    ARG_ARRAY(controls, 1);
 
     if (c->ld == NULL) RETURN_INT(LDAP_SERVER_DOWN);
+    
+    LDAPControl **serverCtrls = (LDAPControl **) calloc(controls->Length() + 1, sizeof(LDAPControl *));
+    int ctrlCount = 0;
+    if (parseServerControls(controls, serverCtrls, &ctrlCount) != LDAP_SUCCESS) {
+      ldap_controls_free(serverCtrls);
+      RETURN_INT(-1);
+    }
 
-    msgid = ldap_delete(c->ld, *dn);
+    ldap_delete_ext(c->ld, *dn, serverCtrls, NULL, &msgid);
     ldap_get_option(c->ld, LDAP_OPT_DESC, &fd);
 
     if (msgid == LDAP_SERVER_DOWN) {
       close(c);
     }
+    
+    ldap_controls_free(serverCtrls);
 
     RETURN_INT(msgid);
   }
