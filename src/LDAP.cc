@@ -852,7 +852,7 @@ public:
 
       switch ( ldap_msgtype( res ) ) {
       case LDAP_RES_SEARCH_REFERENCE:
-        break;
+        // break;
       case LDAP_RES_SEARCH_ENTRY:
       case LDAP_RES_SEARCH_RESULT:
         if (srv_controls) {
