@@ -445,13 +445,6 @@ public:
 
     // Initialize server controls
     serverCtrls = (LDAPControl **) calloc(controls->Length() + 3, sizeof(LDAPControl *));
-    rc = parseServerControls(controls, serverCtrls, &ctrlCount);
-
-    if (rc != LDAP_SUCCESS) {
-      ldap_controls_free(serverCtrls);
-      free(bufhead);
-      RETURN_INT(-1);
-    }
 
     if (sort_str) {
       LDAPSortKey **sortKeyList = NULL;
@@ -504,6 +497,15 @@ public:
     } else if (cookie) {
       ber_bvfree(cookie);
       cookie = NULL;
+    }
+
+    // parse other server controls
+    rc = parseServerControls(controls, serverCtrls, &ctrlCount);
+
+    if (rc != LDAP_SUCCESS) {
+      ldap_controls_free(serverCtrls);
+      free(bufhead);
+      RETURN_INT(-1);
     }
 
     rc = ldap_search_ext(c->ld, *base, searchscope, *filter, attrs, 0,
