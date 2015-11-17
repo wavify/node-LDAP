@@ -1,18 +1,14 @@
-node-LDAP 1.1.6
+ldap-client 2.X.X
 ===============
 
 OpenLDAP client bindings for Node.js. Requires libraries from
 http://www.openldap.org installed.
 
-This latest version implements proper reconnects to a lost LDAP server.
+Now uses Nan to ensure it will build for all version of Node.js.
 
-Of note in this release is access to LDAP Syncrepl. With this API, you
-can subscribe to changes to the LDAP database, and be notified (and
-fire a callback) when anything is changed in LDAP. Use Syncrepl to
-completely mirror an LDAP database, or use it to implement triggers
-that perform an action when LDAP is modified.
+This release is a complete rewrite from 1.x.x, but remains API compatible.
 
-The API is finally stable, and (somewhat) sane.
+NOTE: The module has been renamed to `ldap-client` as `npm` no longer accepts capital letters.
 
 
 Contributing
@@ -37,45 +33,52 @@ Install
 You must ensure you have the latest OpenLDAP client libraries
 installed from http://www.openldap.org
 
-To install the 1.1.6 release from npm:
+To install the latest release from npm:
 
-    npm install LDAP
+    npm install ldap-client
 
-If this fails, please ensure you have uuid.h available (on Ubuntu,
-install the uuid-dev package).
+You will also require the LDAP Development Libraries (on Ubuntu, `sudo apt-get install libldap2-dev`)
 
 
 API
 ===
 
-    new LDAP(otions);
+    new LDAP(options);
 
-Creating an instance:
+Options are provided as a JS object:
 
 ```js
-var LDAP = require('LDAP');
-var ldap = new LDAP({ uri: 'ldap://my.ldap.server',
-                      version: 3,
-                      connecttimeout: 1});
+var LDAP = require('ldap-client');
+
+var ldap = new LDAP({
+    uri:             'ldap://server',   // string
+    starttls:        false,             // boolean, default is false
+    connecttimeout:  -1,                // seconds, default is -1 (infinite timeout), connect timeout
+    base:            'dc=com',          // default base for all future searches
+    attrs:           '*',               // default attribute list for all future searches
+    filter:          '(objectClass=*)', // default filter for all future searches
+    scope:           LDAP.SUBTREE,      // default scope for all future searches
+    reconnect:       function(),        // optional function to call when connect/reconnect occurs
+    disconnect:      function(),        // optional function to call when disconnect occurs        
+});
+
 ```
+
+The reconnect handler is a good place to put a bind() call if you need one. This will rebind on every
+reconnect (which is probably what you want).
 
 ldap.open()
 -----------
 
-    ldap.open(function(err));
-
-Now that you have an instance, you can open a connection. This will
-automatically reconnect until you close():
+Deprecated. Currently, just calls the callback with no error. Feel free to omit.
 
 ```js
 ldap.open(function(err) {
     if (err) {
-       throw new Error('Can not connect');
+        // will never happen
     }
     // connection is ready.
-
 });
-```
 
 ldap.simplebind()
 -----------------
@@ -105,17 +108,21 @@ search_options = {
     base: '',
     scope: '',
     filter: '',
-    attrs: ''
+    attrs: '' // default is '*'
 }
 ```
 
 Scopes are specified as one of the following integers:
 
-* Connection.BASE = 0;
-* Connection.ONELEVEL = 1;
-* Connection.SUBTREE = 2;
-* Connection.SUBORDINATE = 3;
-* Connection.DEFAULT = -1;
+* LDAP.BASE = 0;
+* LDAP.ONELEVEL = 1;
+* LDAP.SUBTREE = 2;
+* LDAP.SUBORDINATE = 3;
+* LDAP.DEFAULT = -1;
+
+List of attributes you want is passed as simple string - join their names
+with space if you need more ('objectGUID sAMAccountName cname' is example of
+valid attrs filter). '\*' is also accepted.
 
 Results are returned as an array of zero or more objects. Each object
 has attributes named after the LDAP attributes in the found
@@ -125,6 +132,7 @@ before you can act on /anything/ is a pet peeve of
 mine). The exception to this rule is the 'dn' attribute - this is
 always a single-valued string.
 
+Example of search result:
 ```js
 [ { gidNumber: [ '2000' ],
   objectClass: [ 'posixAccount', 'top', 'account' ],
@@ -134,6 +142,14 @@ always a single-valued string.
   cn: [ 'fred' ],
   dn: 'cn=fred,dc=ssimicro,dc=com' } ]
 ```
+
+Attributes themselves are usually returned as strings. There is a list of known
+binary attribute names hardcoded in C++ binding sources. Those are always
+returned as Buffers, but the list is incomplete so far. You can take advantage
+of RFC4522 and specify attribute names in the form '\<name\>;binary' - such
+attributes are returned as Buffers too. There is currently no known way to do
+this for '\*' wildcard - patches are welcome (see discussion in issue #44 and
+pull #58 for some ideas).
 
 LDAP servers are usually limited in how many items they are willing to return -
 1024 or 4096 are some typical values. For larger LDAP directories, you need to
@@ -164,10 +180,19 @@ search_options = {
 }
 ```
 
+As of version 1.2.0 you can also read the rootDSE entry of an ldap server.
+To do so, simply issue a read request with base set to an empty string:
+
+```js
+search_options = {
+  base: '',
+  scope: Connection.BASE,  // 0
+  // ... other options as necessary
+}
+```
+
 ldap.findandbind()
 ------------------
-A convenience function that is in here only to encourage developers to
-do LDAP authentication "the right way" if possible.
 
     ldap.findandbind(fb_options, function(err, data))
 
@@ -184,32 +209,20 @@ fb_options = {
 }
 ```
 
-Calls the callback with the record it authenticated against.
+Calls the callback with the record it authenticated against as the
+`data` argument.
 
-Note: since findandbind leaves the connection in an authenticated
-state, you probably don't want to do a findandbind with a general
-purpose instance of this library, as you would be sending one user's
-queries on the authenticated connection of the last user to log
-in. Depending on your configuration, this may not even be an issue,
-but you should be aware.
+`findandbind()` does two convenient things: It searches LDAP for
+a record that matches your search filter, and if one (and only one)
+result is retured, it then uses a second connection with the same
+options as the primary connection to attempt to authenticate to
+LDAP as the user found in the first step.
 
-Did someone say that asyncronous programming wasn't perilous?
+The idea here is to bind your main LDAP instance with an "admin-like"
+account that has the permissions to search. Your secondary connection
+can then just attempt to authenticate to it's heart's content.
 
-There are three obvious solutions to this problem:
-
-* Use two instances of this library (and thus two TCP connections) -
-  one for authenication binds, and the other for general purpose use
-  (which may be pre-bound as admin or some other suitably priveleged
-  user). You are then completely in charge of authorization (can this
-  user edit that user?).
-
-* Create a new instance for each authenticated user, and reconnect
-  that user to their own instance with each page load. The advantage of
-  this strategy is you can then rely on LDAP's authorization systems
-  (slapd then decides what each user can and can't do).
-
-* Create, bind, and close a connection for each user's initial visit, and
-  use cookies and session trickery for subsequent visits.
+`bind()` itself will change the authentication on the primary connection.
 
 ldap.add()
 ----------
@@ -257,98 +270,35 @@ Example:
 ldap.rename('cn=name,dc=example,dc=com', 'cn=newname')
 ```
 
-Schema
-======
+ldap.remove()
+-------------
 
-To instantiate:
+    ldap.remove(dn, function(err))
 
-```js
-var LDAP = require('LDAP');
-var schema = new LDAP.Schema({
-    init_attr: function(attr),
-    init_obj: function(obj),
-    ready: function()
-})
-```
+Deletes an entry.
 
-init_attr is called as each attribute is added so you can
-augment the attributes as they are loaded (add friendly labels, for
-instance). Similarly, init_obj is called as each objectClass is loaded
-so you can add your own properties to objectClasses.
-
-ready is called when the schema has been completely loaded from the server.
-
-Once the schema are loaded, you can get an objectClass like this:
-
-    schema.getObjectClass('person')
-
-Get a specific attribute:
-
-    schema.getAttribute('cn');
-
-Given a LDAP search, result, get all the possible attributes associated with it:
-
-    schema.getAttributesForRec(searchres);
-
-
-SYNCREPL API
-============
-
-If you are connecting to an LDAP server with syncrepl overlay enabled,
-you can be notified of updates to the LDAP tree. Begin by connecting,
-then issue the ldap.sync() command:
-
-    ldap.sync(options)
-
-The options are as follows:
+Example:
 
 ```js
-{
-    base: '',
-    scope: ldap.SUBTREE,
-    filter: '(objectClass=*)',
-    attrs: '* +',
-    rid: '000',
-    cookie: '',
-    syncentry: function(data),
-    syncintermediate: function(data),
-    syncresult: function(data)
-}
+ldap.remove('cn=name,dc=example,dc=com', function(err) {
+  if (err) {
+    // Could not delete entry
+  }
+});
 ```
 
-The cookie attribute is used to send a cookie to the server to ensure
-sync continues where you last left off.
+Bugs
+----
+Domain errors don't work properly. Domains are deprecated as of node 4,
+so I don't think I'm going to track it down. If you need domain handling,
+let me know.
 
-The rid attribute is required, and should be set to a unique value for
-the server you are syncing to.
-
-The function callbacks are called upon initial refresh, and as new
-data is available.
-
-syncentry(data)
---------------------------------
-When this callback fires, you should call ldap.getcookie() to record the
-current cookie and save it somewhere. You can provide this cookie to the
-ldap.sync() call when your process restarts.
-
-
-syncintermediate()
------------------
-TBD.
-
-syncresult(data)
----------------
-TBD.
-
-getcookie()
+TODO Items
 ----------
-This function returns the current cookie from the sync session. You can
-provide this cookie on the next run to pick up where you left off syncing.
+Basically, these are features I don't really need myself.
 
-
-TODO:
------
-* Integration testing for syncrepl.
-* Real-world testing of syncrepl.
-* Testing against Microsoft Active Directory is welcome as I don't
-have a server to test against.
+* Referral chasing
+* Binary attribute handling
+* Paged search results
+* close() and friends
+* test starttls
