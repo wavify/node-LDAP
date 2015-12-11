@@ -72,11 +72,11 @@ function LDAP(opt) {
     return this;
 }
 
-LDAP.prototype.onresult = function(err, msgid, data) {
+LDAP.prototype.onresult = function(err, msgid, data, cookie, pageResult) {
     this.stats.results++;
     if (this.callbacks[msgid]) {
         clearTimeout(this.callbacks[msgid].timer);
-        this.callbacks[msgid](err, data);
+        this.callbacks[msgid](err, data, cookie, pageResult);
         delete this.callbacks[msgid];
     } else {
         this.stats.lateresponses++;
@@ -127,7 +127,12 @@ LDAP.prototype.search = function(opt, fn) {
     return this.enqueue(this.ld.search(arg(opt.base   , this.defaults.base),
                                        arg(opt.filter , this.defaults.filter),
                                        arg(opt.attrs  , this.defaults.attrs),
-                                       arg(opt.scope  , this.defaults.scope)), fn);
+                                       arg(opt.scope  , this.defaults.scope),
+                                       opt.controls || [],
+                                       opt.pagesize,
+                                       opt.cookie,
+                                       opt.offset,
+                                       opt.sortString), fn);
 };
 
 LDAP.prototype.rename = function(dn, newrdn, fn) {
