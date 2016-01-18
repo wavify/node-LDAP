@@ -59,15 +59,21 @@ function LDAP(opt) {
     if (opt.scope)           this.defaults.scope     = opt.scope;
     if (opt.attrs)           this.defaults.attrs     = opt.attrs;
     if (opt.connecttimeout)  this.defaults.ntimeout  = opt.connecttimeout;
-    if (opt.starttls)        this.defaults.starttls  = opt.starttls;
-    
+    if (opt.starttls != undefined) {
+      this.defaults.starttls  = opt.starttls;
+    } else {
+      if (this.defaults.uri.startsWith("ldaps")) {
+        this.defaults.starttls = true;
+      }
+    }  
+
     this.ld = new binding.LDAPCnx(this.onresult.bind(this),
                                   this.onreconnect.bind(this),
                                   this.ondisconnect.bind(this));
     try {
         this.ld.initialize(this.defaults.uri, this.defaults.ntimeout, this.defaults.starttls);
     } catch (e) {
-        
+        console.error(e);
     }
     return this;
 }
@@ -187,8 +193,9 @@ LDAP.prototype.close = function() {
     if (this.auth_connection !== undefined) {
         this.auth_connection.close();
     }
-    // TODO: clean up and disconnect
-};
+    this.ld.close();
+    this.ld = undefined;
+ };
 
 LDAP.prototype.enqueue = function(msgid, fn) {
     if (msgid == -1) {
