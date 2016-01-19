@@ -42,11 +42,11 @@ void LDAPCnx::Init(Local<Object> exports) {
 
   constructor.Reset(tpl->GetFunction());
   exports->Set(Nan::New("LDAPCnx").ToLocalChecked(), tpl->GetFunction());
-
+  
   Isolate * isolate = exports->GetIsolate();
   Local<ObjectTemplate> ct = ObjectTemplate::New(isolate);
   ct->SetInternalFieldCount(1);
-  cookie_template.Reset(isolate, ct);
+  cookie_template.Reset(isolate, ct);  
 }
 
 void LDAPCnx::New(const Nan::FunctionCallbackInfo<Value>& info) {
@@ -94,7 +94,7 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
       int err = -1;
       ldap_parse_result(ld->ld, message, &err,
                         NULL, NULL, NULL, &srv_controls, 0);
-
+                        
       if (err) {
         errparam = Nan::Error(ldap_err2string(err));
       } else {
@@ -107,7 +107,7 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
       case LDAP_RES_SEARCH_ENTRY:
       case LDAP_RES_SEARCH_RESULT:
         {
-
+          
           Local<Array> js_result_list = Nan::New<Array>(ldap_count_entries(ld->ld, message));
 
           int j;
@@ -195,12 +195,12 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
               }
               control = NULL;
             }
-
+          
             if (!cookie || cookie->bv_val == NULL || !*cookie->bv_val) {
               if (cookie) {
                 ber_bvfree(cookie);
               }
-            } else {
+            } else {              
               Handle<ObjectTemplate> templ =
                     Local<ObjectTemplate>::New(isolate, cookie_template);
               cookieObj = templ->NewInstance();
@@ -209,25 +209,27 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
 
             ldap_controls_free(srv_controls);
             srv_controls = NULL;
-
+            
             Local<Value> argv[] = {
+              Nan::New(err),
               errparam,
               Nan::New(ldap_msgid(message)),
               js_result_list,
               cookieObj,
               pageResult
             };
-            ld->callback->Call(5, argv);
-          }
+            ld->callback->Call(6, argv);
+          }          
           else {
             Local<Value> argv[] = {
+              Nan::New(err),
               errparam,
               Nan::New(ldap_msgid(message)),
               js_result_list
             };
-            ld->callback->Call(3, argv);
+            ld->callback->Call(4, argv);
           }
-
+          
           break;
         }
       case LDAP_RES_BIND:
@@ -237,10 +239,11 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
       case LDAP_RES_DELETE:
         {
           Local<Value> argv[] = {
+            Nan::New(err),
             errparam,
             Nan::New(ldap_msgid(message))
           };
-          ld->callback->Call(2, argv);
+          ld->callback->Call(3, argv);
           break;
         }
       default:
@@ -264,7 +267,7 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
 int LDAPCnx::OnConnect(LDAP *ld, Sockbuf *sb,
                       LDAPURLDesc *srv, struct sockaddr *addr,
                       struct ldap_conncb *ctx) {
-
+                        
   int fd;
   LDAPCnx * lc = (LDAPCnx *)ctx->lc_arg;
 
@@ -325,7 +328,7 @@ void LDAPCnx::Initialize(const Nan::FunctionCallbackInfo<Value>& info) {
   }
 
   res = ldap_simple_bind(ld->ld, NULL, NULL);
-
+  
   if (res == -1) {
     Nan::ThrowError("Error anon bind");
     return;
@@ -373,13 +376,13 @@ void LDAPCnx::Bind(const Nan::FunctionCallbackInfo<Value>& info) {
   LDAPCnx* ld = ObjectWrap::Unwrap<LDAPCnx>(info.Holder());
   Nan::Utf8String dn(info[0]);
   Nan::Utf8String pw(info[1]);
-
+  
   int res = ldap_simple_bind(ld->ld, *dn, *pw);
   info.GetReturnValue().Set(res);
 }
 
 void LDAPCnx::Close(const Nan::FunctionCallbackInfo<Value>& info) {
-  LDAPCnx* ld = ObjectWrap::Unwrap<LDAPCnx>(info.Holder());
+  LDAPCnx* ld = ObjectWrap::Unwrap<LDAPCnx>(info.Holder());  
   int res = -1;
   if (ld->ld != NULL) {
     res = ldap_unbind(ld->ld);

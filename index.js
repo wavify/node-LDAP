@@ -78,11 +78,15 @@ function LDAP(opt) {
     return this;
 }
 
-LDAP.prototype.onresult = function(err, msgid, data, cookie, pageResult) {
+LDAP.prototype.onresult = function(errCode, errMsg, msgid, data, cookie, pageResult) {
     this.stats.results++;
     if (this.callbacks[msgid]) {
         clearTimeout(this.callbacks[msgid].timer);
-        this.callbacks[msgid](err, data, cookie, pageResult);
+        if (errMsg) {          
+          this.callbacks[msgid](new LDAPError(errMsg, errCode), data, cookie, pageResult);
+        } else {
+          this.callbacks[msgid](errMsg, data, cookie, pageResult);
+        }
         delete this.callbacks[msgid];
     } else {
         this.stats.lateresponses++;
