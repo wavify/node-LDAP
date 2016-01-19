@@ -197,8 +197,11 @@ LDAP.prototype.close = function() {
     if (this.auth_connection !== undefined) {
         this.auth_connection.close();
     }
-    this.ld.close();
-    this.ld = undefined;
+    
+    if (this.ld !== undefined) {
+      this.ld.close();
+      this.ld = undefined;
+    }
  };
 
 LDAP.prototype.enqueue = function(msgid, fn) {
