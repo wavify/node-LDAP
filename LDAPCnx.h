@@ -35,6 +35,7 @@ class LDAPCnx : public Nan::ObjectWrap {
 
   static Nan::Persistent<v8::Function> constructor;
   LDAP * ld;
+  int connectionId;
 };
 
 #endif

@@ -4,6 +4,9 @@
 
 var binding = require('bindings')('LDAPCnx');
 var LDAPError = require('./LDAPError');
+var GID = 0;
+var LOG_PREFIX = "index.js: connId: ";
+var LOG_ENABLE = true;
 
 function arg(val, def) {
     if (val !== undefined) {
@@ -37,7 +40,8 @@ function LDAP(opt) {
         scope:       this.SUBTREE,
         attrs:       '*',
         starttls:    false,
-        ntimeout:    1000
+        ntimeout:    1000,
+        autoreconnect:true
     };
     this.timeout = 2000;
 
@@ -65,27 +69,38 @@ function LDAP(opt) {
       if (this.defaults.uri.startsWith("ldaps")) {
         this.defaults.starttls = true;
       }
-    }  
+    }
+    if (opt.autoreconnect != undefined)
+      this.defaults.autoreconnect = opt.autoreconnect;
 
     this.ld = new binding.LDAPCnx(this.onresult.bind(this),
                                   this.onreconnect.bind(this),
+
                                   this.ondisconnect.bind(this));
+    this.connectionId = GID;
+    if (Number.MAX_SAFE_INTEGER != GID)
+      GID++;
+    else 
+      GID = 0;    
+    if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId , " initialized")
+
     try {
-        this.ld.initialize(this.defaults.uri, this.defaults.ntimeout, this.defaults.starttls);
+        this.ld.initialize(this.defaults.uri, this.defaults.ntimeout, this.defaults.starttls, this.connectionId);
     } catch (e) {
         console.error(e);
     }
     return this;
 }
 
-LDAP.prototype.onresult = function(errCode, err, msgid, data, cookie, pageResult) {
+LDAP.prototype.onresult = function(errCode, errMsg, msgid, data, cookie, pageResult) {
     this.stats.results++;
     if (this.callbacks[msgid]) {
         clearTimeout(this.callbacks[msgid].timer);
-        if (err != undefined && errCode != undefined) {          
-          this.callbacks[msgid](new LDAPError(err.message, errCode), data, cookie, pageResult);
+        if (errMsg) {
+          if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", Error:",  errCode, errMsg);
+          this.callbacks[msgid](new LDAPError(errMsg, errCode), data, cookie, pageResult);
         } else {
-          this.callbacks[msgid](err, data, cookie, pageResult);
+          this.callbacks[msgid](errMsg, data, cookie, pageResult);
         }
         delete this.callbacks[msgid];
     } else {
@@ -101,7 +116,24 @@ LDAP.prototype.onreconnect = function() {
 LDAP.prototype.ondisconnect = function() {
     this.stats.disconnects++;
     // default reconnect callback does nothing
+    if (this.ld == undefined) {
+      // disconnected by close()
+      if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId, " onDisconnect: disconnected by close()");
+    } else {
+      if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId, " onDisconnect: autoreconnect");
+      reconnect(this.ld, this.connectionId, this.defaults);
+    }
 };
+
+function reconnect(ld, connectionId, options) {
+  if (options.autoreconnect)
+        try {
+            ld.initialize(options.uri, connectionId, options.ntimeout, options.starttls);
+            ld.bind(options.bindOpt.binddn, options.bindOpt.password)
+        } catch (e) {
+            console.error(e);
+        }
+}
 
 LDAP.prototype.remove = LDAP.prototype.delete  = function(dn, fn) {
     this.stats.removes++;
@@ -120,6 +152,7 @@ LDAP.prototype.bind = LDAP.prototype.simplebind = function(opt, fn) {
         typeof fn           !== 'function') {
         throw new LDAPError('Missing argument');
     }
+    this.defaults.bindOpt = opt;
     return this.enqueue(this.ld.bind(opt.binddn, opt.password), fn);
 };
 
@@ -134,6 +167,7 @@ LDAP.prototype.add = function(dn, attrs, fn) {
 
 LDAP.prototype.search = function(opt, fn) {
     this.stats.searches++;
+    if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId, " search()");
     return this.enqueue(this.ld.search(arg(opt.base   , this.defaults.base),
                                        arg(opt.filter , this.defaults.filter),
                                        arg(opt.attrs  , this.defaults.attrs),
@@ -197,17 +231,33 @@ LDAP.prototype.close = function() {
     if (this.auth_connection !== undefined) {
         this.auth_connection.close();
     }
-    
     if (this.ld !== undefined) {
       this.ld.close();
       this.ld = undefined;
     }
+    if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId, " close() ");
  };
 
 LDAP.prototype.enqueue = function(msgid, fn) {
     if (msgid == -1) {
-        process.nextTick(function() {
-            fn(new LDAPError(this.ld.errorstring()));
+          process.nextTick(function() {
+            var errStr, errCode;
+            if (this.ld != undefined) {
+              errStr = this.ld.errorstring().trim();
+              errCode = this.ld.errorno();
+            }
+            if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId, " ", errStr);
+            if (errCode != undefined) {
+              if (errCode == 50) {
+                // Insufficient access
+                if (LOG_ENABLE) console.log(LOG_PREFIX, "Insufficient access. Close this connection.")
+                this.ld.close();
+              }
+            } else if (errStr.toLowerCase().indexOf('can\'t contact ldap server') >= 0) {
+              if (LOG_ENABLE) console.log(LOG_PREFIX,  connectionId, " autoreconnect");
+              reconnect(this.ld, this.connectionId, this.defaults);
+            }
+            fn(new LDAPError(errStr, (errCode == undefined) ? -1 : errCode));
             return;
         }.bind(this));
         this.stats.errors++;

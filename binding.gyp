@@ -11,7 +11,9 @@
                 "-lldap"
             ],
             "defines": [
-                "LDAP_DEPRECATED"
+                "LDAP_DEPRECATED",
+                "NODELDAP_DEBUG=false",
+                "NODELDAP_DEBUG_ARG=false"
             ],
             "ldflags": [
                 "-L/usr/local/lib"
