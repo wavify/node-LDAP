@@ -6,7 +6,7 @@ var binding = require('bindings')('LDAPCnx');
 var LDAPError = require('./LDAPError');
 var GID = 0;
 var LOG_PREFIX = "index.js: connId: ";
-var LOG_ENABLE = true;
+var LOG_ENABLE = false;
 
 function arg(val, def) {
     if (val !== undefined) {
