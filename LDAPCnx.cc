@@ -100,188 +100,207 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
     }
     return;
   }
-
-  switch(ldap_result(ld->ld, LDAP_RES_ANY, LDAP_MSG_ALL, &ldap_tv, &message)) {
-  case 0:
-    // timeout occurred, which I don't think happens in async mode
-  case -1:
-    {
-      // We can't really do much; we don't have a msgid to callback to
-      break;
-    }
-  default:
-    {
-      //int err = ldap_result2error(ld->ld, message, 0);
-      ldap_parse_result(ld->ld, message, &err,
-                        NULL, NULL, NULL, &srv_controls, 0);
-      if (err) {
+  
+  int res = ldap_result(ld->ld, LDAP_RES_ANY, LDAP_MSG_ALL, &ldap_tv, &message);
 #if NODELDAP_DEBUG
-        cerr << "LDAPCnx::Event connId:"<< ld->connectionId <<" err: " << err << "(" << ldap_err2string(err) << ")" << endl;
+    cerr << "LDAPCnx::Event connId:" << ld->connectionId << ", res:" << res << endl;
 #endif
+    
+  // 0: timeout occurred, which I don't think happens in async mode
+  // -1: We can't really do much; we don't have a msgid to callback to      
+  if (res == 0) {
+#if NODELDAP_DEBUG
+    cerr << "LDAPCnx::Event connId:" << ld->connectionId << " failed.  Time out." << endl;
+#endif 
+  }
+  else if (res == -1) 
+  {
+#if NODELDAP_DEBUG
+    cerr << "LDAPCnx::Event connId:" << ld->connectionId << " failed.  Closing connection." << endl;
+#endif 
+    
+    if (ld->ld != NULL) {
+      res = ldap_unbind(ld->ld);
+      ld->ld = NULL;
+      if (ld->handle) {
+        uv_poll_stop(ld->handle);
+        ld->handle = NULL;
       }
+    }
+  } 
+  else 
+  {
+    //int err = ldap_result2error(ld->ld, message, 0);
+    ldap_parse_result(ld->ld, message, &err,
+                      NULL, NULL, NULL, &srv_controls, 0);
+    if (err) {
+#if NODELDAP_DEBUG
+      cerr << "LDAPCnx::Event connId:"<< ld->connectionId <<" err: " << err << "(" << ldap_err2string(err) << ")" << endl;
+#endif
+    }
 
-      switch ( ldap_msgtype( message ) ) {
-      case LDAP_RES_SEARCH_REFERENCE:
-        break;
-      case LDAP_RES_SEARCH_ENTRY:
-      case LDAP_RES_SEARCH_RESULT:
-        {
+    switch ( ldap_msgtype( message ) ) {
+    case LDAP_RES_SEARCH_REFERENCE:
+      break;
+    case LDAP_RES_SEARCH_ENTRY:
+    case LDAP_RES_SEARCH_RESULT:
+      {
 
-          Local<Array> js_result_list = Nan::New<Array>(ldap_count_entries(ld->ld, message));
+        Local<Array> js_result_list = Nan::New<Array>(ldap_count_entries(ld->ld, message));
 
-          int j;
+        int j;
 
-          for (entry = ldap_first_entry(ld->ld, message), j = 0 ; entry ;
-               entry = ldap_next_entry(ld->ld, entry), j++) {
-            Local<Object> js_result = Nan::New<Object>();
+        for (entry = ldap_first_entry(ld->ld, message), j = 0 ; entry ;
+             entry = ldap_next_entry(ld->ld, entry), j++) {
+          Local<Object> js_result = Nan::New<Object>();
 
-            js_result_list->Set(Nan::New(j), js_result);
+          js_result_list->Set(Nan::New(j), js_result);
 
-            char * dn = ldap_get_dn(ld->ld, entry);
-            BerElement * berptr = NULL;
-            for (char * attrname = ldap_first_attribute(ld->ld, entry, &berptr) ;
-                 attrname ; attrname = ldap_next_attribute(ld->ld, entry, berptr)) {
-              berval ** vals = ldap_get_values_len(ld->ld, entry, attrname);
-              int num_vals = ldap_count_values_len(vals);
-              Local<Array> js_attr_vals = Nan::New<Array>(num_vals);
-              js_result->Set(Nan::New(attrname).ToLocalChecked(), js_attr_vals);
+          char * dn = ldap_get_dn(ld->ld, entry);
+          BerElement * berptr = NULL;
+          for (char * attrname = ldap_first_attribute(ld->ld, entry, &berptr) ;
+               attrname ; attrname = ldap_next_attribute(ld->ld, entry, berptr)) {
+            berval ** vals = ldap_get_values_len(ld->ld, entry, attrname);
+            int num_vals = ldap_count_values_len(vals);
+            Local<Array> js_attr_vals = Nan::New<Array>(num_vals);
+            js_result->Set(Nan::New(attrname).ToLocalChecked(), js_attr_vals);
 
-              // char * bin = strstr(attrname, ";binary");
-              int bin = !strcmp(attrname, "jpegPhoto");
+            // char * bin = strstr(attrname, ";binary");
+            int bin = !strcmp(attrname, "jpegPhoto");
 
-              for (int i = 0 ; i < num_vals && vals[i] ; i++) {
-                if (bin) {
-                  // js_attr_vals->Set(Nan::New(i), ld->makeBuffer(vals[i]));
-                  js_attr_vals->Set(Nan::New(i), Nan::CopyBuffer(vals[i]->bv_val, vals[i]->bv_len).ToLocalChecked());
-                } else {
-                  js_attr_vals->Set(Nan::New(i), Nan::New(vals[i]->bv_val).ToLocalChecked());
-                }
-              } // all values for this attr added.
-              ldap_value_free_len(vals);
-              ldap_memfree(attrname);
-            } // attrs for this entry added. Next entry.
-            js_result->Set(Nan::New("dn").ToLocalChecked(), Nan::New(dn).ToLocalChecked());
-            ber_free(berptr,0);
-            ldap_memfree(dn);
-          } // all entries done.
-
-          if (srv_controls) {
-            Isolate * isolate = v8::Isolate::GetCurrent();
-            struct berval* cookie = NULL;
-            int rc;
-            LDAPControl* control = NULL;
-            Local<Object> pageResult = Object::New(isolate);
-            Local<Object> cookieObj = Object::New(isolate);
-
-            control = ldap_control_find(LDAP_CONTROL_SORTRESPONSE, srv_controls, NULL);
-            if (control) {
-              Local<Object> sortResult = Object::New(isolate);
-              ber_int_t sort_rc = 0;
-              char *error_attr = NULL;
-              rc = ldap_parse_sortresponse_control(ld->ld, control, &sort_rc, &error_attr);
-              if (rc == LDAP_SUCCESS) {
-                sortResult->Set(String::NewFromUtf8(isolate, "returnCode"), Integer::New(isolate, sort_rc));
-                if (error_attr) {
-                  sortResult->Set(String::NewFromUtf8(isolate, "errorAttr"), String::NewFromUtf8(isolate, error_attr));
-                  ldap_memfree(error_attr);
-                  error_attr = NULL;
-                }
-                pageResult->Set(String::NewFromUtf8(isolate, "sort"), sortResult);
+            for (int i = 0 ; i < num_vals && vals[i] ; i++) {
+              if (bin) {
+                // js_attr_vals->Set(Nan::New(i), ld->makeBuffer(vals[i]));
+                js_attr_vals->Set(Nan::New(i), Nan::CopyBuffer(vals[i]->bv_val, vals[i]->bv_len).ToLocalChecked());
+              } else {
+                js_attr_vals->Set(Nan::New(i), Nan::New(vals[i]->bv_val).ToLocalChecked());
               }
-              control = NULL;
-            }
+            } // all values for this attr added.
+            ldap_value_free_len(vals);
+            ldap_memfree(attrname);
+          } // attrs for this entry added. Next entry.
+          js_result->Set(Nan::New("dn").ToLocalChecked(), Nan::New(dn).ToLocalChecked());
+          ber_free(berptr,0);
+          ldap_memfree(dn);
+        } // all entries done.
 
-            int pos = 0;
-            int count = 0;
-            int errcode = LDAP_SUCCESS;
-            if ( (control = ldap_control_find(LDAP_CONTROL_VLVRESPONSE, srv_controls, NULL)) ) {
-              rc = ldap_parse_vlvresponse_control(ld->ld, control, &pos, &count, &cookie, &errcode);
-              if (rc == LDAP_SUCCESS) {
-                pageResult->Set(String::NewFromUtf8(isolate, "offset"), Integer::New(isolate, pos - 1));
-                pageResult->Set(String::NewFromUtf8(isolate, "count"), Integer::New(isolate, count));
-                pageResult->Set(String::NewFromUtf8(isolate, "vlvReturnCode"), Integer::New(isolate, errcode));
-              }
-              control = NULL;
-            } else if ( (control = ldap_control_find(LDAP_CONTROL_PAGEDRESULTS, srv_controls, NULL)) ) {
-  #if LDAP_DEPRECATED
-              rc = ldap_parse_page_control(ld->ld, srv_controls, &count, &cookie);
-  #else
-              cookie = (struct berval *) malloc( sizeof( struct berval ) );
-              rc = ldap_parse_pageresponse_control(ld->ld, control, &count, cookie);
-  #endif
-              if (rc == LDAP_SUCCESS) {
-                pageResult->Set(String::NewFromUtf8(isolate, "count"), Integer::New(isolate, count));
-              }
-              control = NULL;
-            }
-
-            if (!cookie || cookie->bv_val == NULL || !*cookie->bv_val) {
-              if (cookie) {
-                ber_bvfree(cookie);
-              }
-            } else {
-              Handle<ObjectTemplate> templ =
-                    Local<ObjectTemplate>::New(isolate, cookie_template);
-              cookieObj = templ->NewInstance();
-              cookieObj->SetAlignedPointerInInternalField(0, cookie);
-            }
-
-            ldap_controls_free(srv_controls);
-            srv_controls = NULL;
-            Local<Value> argv[6];
-            argv[0] = Nan::New(err);
-            if (err) {
-              argv[1] = String::NewFromUtf8(isolate, ldap_err2string(err));
-            } else {
-              argv[1] = Nan::Undefined();
-            }
-            argv[2] = Nan::New(ldap_msgid(message));
-            argv[3] = js_result_list;
-            argv[4] = cookieObj;
-            argv[5] = pageResult;
-            ld->callback->Call(6, argv);
-          }
-          else {
-            Isolate * isolate = v8::Isolate::GetCurrent();
-            Local<Value> argv[4];
-            argv[0] = Nan::New(err);
-            if (err)
-              argv[1] = String::NewFromUtf8(isolate, ldap_err2string(err));
-            else
-              argv[1] = Nan::Undefined();
-            argv[2] = Nan::New(ldap_msgid(message));
-            argv[3] = js_result_list;
-            ld->callback->Call(4, argv);
-          }
-
-          break;
-        }
-      case LDAP_RES_BIND:
-      case LDAP_RES_MODIFY:
-      case LDAP_RES_MODDN:
-      case LDAP_RES_ADD:
-      case LDAP_RES_DELETE:
-        {
+        if (srv_controls) {
           Isolate * isolate = v8::Isolate::GetCurrent();
-          Local<Value> argv[3];
+          struct berval* cookie = NULL;
+          int rc;
+          LDAPControl* control = NULL;
+          Local<Object> pageResult = Object::New(isolate);
+          Local<Object> cookieObj = Object::New(isolate);
+
+          control = ldap_control_find(LDAP_CONTROL_SORTRESPONSE, srv_controls, NULL);
+          if (control) {
+            Local<Object> sortResult = Object::New(isolate);
+            ber_int_t sort_rc = 0;
+            char *error_attr = NULL;
+            rc = ldap_parse_sortresponse_control(ld->ld, control, &sort_rc, &error_attr);
+            if (rc == LDAP_SUCCESS) {
+              sortResult->Set(String::NewFromUtf8(isolate, "returnCode"), Integer::New(isolate, sort_rc));
+              if (error_attr) {
+                sortResult->Set(String::NewFromUtf8(isolate, "errorAttr"), String::NewFromUtf8(isolate, error_attr));
+                ldap_memfree(error_attr);
+                error_attr = NULL;
+              }
+              pageResult->Set(String::NewFromUtf8(isolate, "sort"), sortResult);
+            }
+            control = NULL;
+          }
+
+          int pos = 0;
+          int count = 0;
+          int errcode = LDAP_SUCCESS;
+          if ( (control = ldap_control_find(LDAP_CONTROL_VLVRESPONSE, srv_controls, NULL)) ) {
+            rc = ldap_parse_vlvresponse_control(ld->ld, control, &pos, &count, &cookie, &errcode);
+            if (rc == LDAP_SUCCESS) {
+              pageResult->Set(String::NewFromUtf8(isolate, "offset"), Integer::New(isolate, pos - 1));
+              pageResult->Set(String::NewFromUtf8(isolate, "count"), Integer::New(isolate, count));
+              pageResult->Set(String::NewFromUtf8(isolate, "vlvReturnCode"), Integer::New(isolate, errcode));
+            }
+            control = NULL;
+          } else if ( (control = ldap_control_find(LDAP_CONTROL_PAGEDRESULTS, srv_controls, NULL)) ) {
+#if LDAP_DEPRECATED
+            rc = ldap_parse_page_control(ld->ld, srv_controls, &count, &cookie);
+#else
+            cookie = (struct berval *) malloc( sizeof( struct berval ) );
+            rc = ldap_parse_pageresponse_control(ld->ld, control, &count, cookie);
+#endif
+            if (rc == LDAP_SUCCESS) {
+              pageResult->Set(String::NewFromUtf8(isolate, "count"), Integer::New(isolate, count));
+            }
+            control = NULL;
+          }
+
+          if (!cookie || cookie->bv_val == NULL || !*cookie->bv_val) {
+            if (cookie) {
+              ber_bvfree(cookie);
+            }
+          } else {
+            Handle<ObjectTemplate> templ =
+                  Local<ObjectTemplate>::New(isolate, cookie_template);
+            cookieObj = templ->NewInstance();
+            cookieObj->SetAlignedPointerInInternalField(0, cookie);
+          }
+
+          ldap_controls_free(srv_controls);
+          srv_controls = NULL;
+          Local<Value> argv[6];
+          argv[0] = Nan::New(err);
+          if (err) {
+            argv[1] = String::NewFromUtf8(isolate, ldap_err2string(err));
+          } else {
+            argv[1] = Nan::Undefined();
+          }
+          argv[2] = Nan::New(ldap_msgid(message));
+          argv[3] = js_result_list;
+          argv[4] = cookieObj;
+          argv[5] = pageResult;
+          ld->callback->Call(6, argv);
+        }
+        else {
+          Isolate * isolate = v8::Isolate::GetCurrent();
+          Local<Value> argv[4];
           argv[0] = Nan::New(err);
           if (err)
             argv[1] = String::NewFromUtf8(isolate, ldap_err2string(err));
           else
             argv[1] = Nan::Undefined();
           argv[2] = Nan::New(ldap_msgid(message));
-          ld->callback->Call(3, argv);
-          break;
+          argv[3] = js_result_list;
+          ld->callback->Call(4, argv);
         }
-      default:
-        {
 
-          //emit an error
-          // Nan::ThrowError("Unrecognized packet");
-        }
+        break;
+      }
+    case LDAP_RES_BIND:
+    case LDAP_RES_MODIFY:
+    case LDAP_RES_MODDN:
+    case LDAP_RES_ADD:
+    case LDAP_RES_DELETE:
+      {
+        Isolate * isolate = v8::Isolate::GetCurrent();
+        Local<Value> argv[3];
+        argv[0] = Nan::New(err);
+        if (err)
+          argv[1] = String::NewFromUtf8(isolate, ldap_err2string(err));
+        else
+          argv[1] = Nan::Undefined();
+        argv[2] = Nan::New(ldap_msgid(message));
+        ld->callback->Call(3, argv);
+        break;
+      }
+    default:
+      {
+
+        //emit an error
+        // Nan::ThrowError("Unrecognized packet");
       }
     }
   }
+  
   ldap_msgfree(message);
   return;
 }
@@ -519,6 +538,11 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
 #if NODELDAP_DEBUG
   cerr << "LDAPCnx::Search connId:" << ld->connectionId << endl;
 #endif
+  
+  if (ld->ld == NULL) {
+    info.GetReturnValue().Set(-1);
+    return;
+  }
 
   Nan::Utf8String base(info[0]);
   Nan::Utf8String filter(info[1]);

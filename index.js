@@ -75,7 +75,6 @@ function LDAP(opt) {
 
     this.ld = new binding.LDAPCnx(this.onresult.bind(this),
                                   this.onreconnect.bind(this),
-
                                   this.ondisconnect.bind(this));
     this.connectionId = GID;
     if (Number.MAX_SAFE_INTEGER != GID)
@@ -87,13 +86,14 @@ function LDAP(opt) {
     try {
         this.ld.initialize(this.defaults.uri, this.defaults.ntimeout, this.defaults.starttls, this.connectionId);
     } catch (e) {
-        console.error(e);
+        console.error("failed to reconnect", e);
     }
     return this;
 }
 
 LDAP.prototype.onresult = function(errCode, errMsg, msgid, data, cookie, pageResult) {
     this.stats.results++;
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", onresult()");
     if (this.callbacks[msgid]) {
         clearTimeout(this.callbacks[msgid].timer);
         if (errMsg) {
@@ -110,11 +110,13 @@ LDAP.prototype.onresult = function(errCode, errMsg, msgid, data, cookie, pageRes
 
 LDAP.prototype.onreconnect = function() {
     this.stats.reconnects++;
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", onreconnect()");
     // default reconnect callback does nothing
 };
 
 LDAP.prototype.ondisconnect = function() {
     this.stats.disconnects++;
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", ondisconnect()");
     // default reconnect callback does nothing
     if (this.ld == undefined) {
       // disconnected by close()
@@ -126,17 +128,19 @@ LDAP.prototype.ondisconnect = function() {
 };
 
 function reconnect(ld, connectionId, options) {
+  if (LOG_ENABLE) console.log(LOG_PREFIX, connectionId, ", reconnect()");
   if (options.autoreconnect)
         try {
             ld.initialize(options.uri, connectionId, options.ntimeout, options.starttls);
             ld.bind(options.bindOpt.binddn, options.bindOpt.password)
         } catch (e) {
-            console.error(e);
+            console.error("Failed to reconnect", e);
         }
 }
 
 LDAP.prototype.remove = LDAP.prototype.delete  = function(dn, fn) {
     this.stats.removes++;
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", remove()");
     if (typeof dn !== 'string' ||
         typeof fn !== 'function') {
         throw new LDAPError('Missing argument');
@@ -146,6 +150,7 @@ LDAP.prototype.remove = LDAP.prototype.delete  = function(dn, fn) {
 
 LDAP.prototype.bind = LDAP.prototype.simplebind = function(opt, fn) {
     this.stats.binds++;
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", bind()");
     if (typeof opt          === 'undefined' ||
         typeof opt.binddn   !== 'string' ||
         typeof opt.password !== 'string' ||
@@ -158,6 +163,7 @@ LDAP.prototype.bind = LDAP.prototype.simplebind = function(opt, fn) {
 
 LDAP.prototype.add = function(dn, attrs, fn) {
     this.stats.adds++;
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", add()");
     if (typeof dn    !== 'string' ||
         typeof attrs !== 'object') {
         throw new LDAPError('Missing argument');
@@ -181,6 +187,7 @@ LDAP.prototype.search = function(opt, fn) {
 
 LDAP.prototype.rename = function(dn, newrdn, fn) {
     this.stats.renames++;
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", rename()");
     if (typeof dn     !== 'string' ||
         typeof newrdn !== 'string' ||
         typeof fn     !== 'function') {
@@ -191,6 +198,7 @@ LDAP.prototype.rename = function(dn, newrdn, fn) {
 
 LDAP.prototype.modify = function(dn, ops, fn) {
     this.stats.modifies++;
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", modify()");
     if (typeof dn  !== 'string' ||
         typeof ops !== 'object' ||
         typeof fn  !== 'function') {
@@ -204,7 +212,7 @@ LDAP.prototype.findandbind = function(opt, fn) {
         opt.password === undefined)  {
             throw new Error('Missing argument');
         }
-
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", findandbind()");
     this.search(opt, function(err, data) {
         if (err) {
             fn(err);
@@ -263,6 +271,7 @@ LDAP.prototype.enqueue = function(msgid, fn) {
         this.stats.errors++;
         return this;
     }
+    if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", enqueue()");
     fn.timer = setTimeout(function searchTimeout() {
         delete this.callbacks[msgid];
         fn(new LDAPError('Timeout'), msgid);
