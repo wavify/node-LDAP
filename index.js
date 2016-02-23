@@ -118,7 +118,7 @@ LDAP.prototype.ondisconnect = function() {
     this.stats.disconnects++;
     if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", ondisconnect()");
     // default reconnect callback does nothing
-    if (this.ld == undefined) {
+    if (this.ld == undefined || this.closing == true) {
       // disconnected by close()
       if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId, " onDisconnect: disconnected by close()");
     } else {
@@ -236,6 +236,7 @@ LDAP.prototype.findandbind = function(opt, fn) {
 };
 
 LDAP.prototype.close = function() {
+    this.closing = true;
     if (this.auth_connection !== undefined) {
         this.auth_connection.close();
     }
@@ -244,6 +245,7 @@ LDAP.prototype.close = function() {
       this.ld = undefined;
     }
     if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId, " close() ");
+    this.closing = false;    
  };
 
 LDAP.prototype.enqueue = function(msgid, fn) {
