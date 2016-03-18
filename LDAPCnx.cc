@@ -3,6 +3,11 @@
 
 static struct timeval ldap_tv = { 0, 0 };
 
+// Search Result/Request Control
+const int DEFAULT_SRC = 0;
+const int SIMPLE_PAGED_RESULTS_SRC = 1;
+const int VIRTUAL_LIST_VIEW_SRC = 2;
+
 using namespace v8;
 using namespace std;
 
@@ -100,25 +105,25 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
     }
     return;
   }
-  
+
   int res = ldap_result(ld->ld, LDAP_RES_ANY, LDAP_MSG_ALL, &ldap_tv, &message);
 #if NODELDAP_DEBUG
     cerr << "LDAPCnx::Event connId:" << ld->connectionId << ", res:" << res << endl;
 #endif
-    
+
   // 0: timeout occurred, which I don't think happens in async mode
-  // -1: We can't really do much; we don't have a msgid to callback to      
+  // -1: We can't really do much; we don't have a msgid to callback to
   if (res == 0) {
 #if NODELDAP_DEBUG
     cerr << "LDAPCnx::Event connId:" << ld->connectionId << " failed.  Time out." << endl;
-#endif 
+#endif
   }
-  else if (res == -1) 
+  else if (res == -1)
   {
 #if NODELDAP_DEBUG
     cerr << "LDAPCnx::Event connId:" << ld->connectionId << " failed.  Closing connection." << endl;
-#endif 
-    
+#endif
+
     if (ld->ld != NULL) {
       res = ldap_unbind(ld->ld);
       ld->ld = NULL;
@@ -127,8 +132,8 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
         ld->handle = NULL;
       }
     }
-  } 
-  else 
+  }
+  else
   {
     //int err = ldap_result2error(ld->ld, message, 0);
     ldap_parse_result(ld->ld, message, &err,
@@ -239,10 +244,9 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
               ber_bvfree(cookie);
             }
           } else {
-            Handle<ObjectTemplate> templ =
-                  Local<ObjectTemplate>::New(isolate, cookie_template);
-            cookieObj = templ->NewInstance();
-            cookieObj->SetAlignedPointerInInternalField(0, cookie);
+            cookieObj->Set(String::NewFromUtf8(isolate, "bv_len"), Integer::New(isolate, cookie->bv_len));
+            Nan::MaybeLocal<Object>buffer = Nan::NewBuffer(cookie->bv_val, cookie->bv_len);
+            cookieObj->Set(String::NewFromUtf8(isolate, "bv_val"), buffer.ToLocalChecked());
           }
 
           ldap_controls_free(srv_controls);
@@ -300,7 +304,7 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
       }
     }
   }
-  
+
   ldap_msgfree(message);
   return;
 }
@@ -538,7 +542,16 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
 #if NODELDAP_DEBUG
   cerr << "LDAPCnx::Search connId:" << ld->connectionId << endl;
 #endif
-  
+
+#if NODELDAP_DEBUG_ARG
+  cerr << "LDAPCnx::Search connId:" << ld->connectionId << endl;
+  for (int i = 0; i < info.Length(); i++) {
+    v8::String::Utf8Value str(info[i]);
+    const char* cstr = ToCString(str);
+    cerr << "LDAPCnx::Search arg" << i << "=" << cstr << endl;
+  }
+#endif
+
   if (ld->ld == NULL) {
     info.GetReturnValue().Set(-1);
     return;
@@ -549,12 +562,13 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
   Nan::Utf8String attrs(info[2]);
   int scope = info[3]->NumberValue();
 
-  int rc, ctrlCount = 0;
+  int rc, ctrlCount = 0, searchRequestControlType = 0;
   Local<Array> controls;
   LDAPControl** serverCtrls;
   int page_size = 0;
   int page_offset = 0;
   char * sort_str = NULL;
+
   Local<Object> cookieObj;
   struct berval* cookie = NULL;
 
@@ -566,37 +580,38 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
   }
   if (!(info[5]->IsUndefined())) {
     // this is a paged search
-    page_size = info[5]->Int32Value();
+    searchRequestControlType = info[5]->Int32Value();
   }
   if (!(info[6]->IsUndefined())) {
-    if (!info[6]->IsObject()) {
-      info.GetReturnValue().Set(-1);
-      return;
-    }
-    cookieObj = info[6]->ToObject();
-    if (cookieObj->InternalFieldCount() != 1) {
-      info.GetReturnValue().Set(-1);
-      return;
-    }
-    cookie = static_cast<berval*>(cookieObj->GetAlignedPointerFromInternalField(0));
-    if (cookie == NULL) {
-      info.GetReturnValue().Set(-1);
-      return;
-    }
-    cookieObj->SetAlignedPointerInInternalField(0, NULL);
+    // this is a paged search
+    page_size = info[6]->Int32Value();
   }
   if (!(info[7]->IsUndefined())) {
-    // this is a vlv search
-    page_offset = info[7]->Int32Value();
+    if (!info[7]->IsObject()) {
+      info.GetReturnValue().Set(-1);
+      return;
+    }
+    Isolate * isolate = v8::Isolate::GetCurrent();
+    Handle<Object> cookieObj = Handle<Object>::Cast(info[7]);
+    Handle<Value> bv_val =
+                  cookieObj->Get(String::NewFromUtf8(isolate,"bv_val"));
+    Handle<Value> bv_len =
+                  cookieObj->Get(String::NewFromUtf8(isolate,"bv_len"));
+    cookie = (struct berval *) malloc( sizeof( struct berval ) );
+    cookie->bv_val = node::Buffer::Data(bv_val->ToObject());
+    cookie->bv_len = bv_len->NumberValue();
   }
-  if (info[8]->IsString()) {
-    String::Utf8Value sortString(info[8]);
+  if (!(info[8]->IsUndefined())) {
+    // this is a vlv search
+    page_offset = info[8]->Int32Value();
+  }
+  if (info[9]->IsString()) {
+    String::Utf8Value sortString(info[9]);
     sort_str = strdup(*sortString);
   }
 
   int msgid = 0;
   char * attrlist[255];
-
   char *bufhead = strdup(*attrs);
   char *buf = bufhead;
   char **ap;
@@ -634,19 +649,11 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
     }
   }
 
-  if (page_offset > 0 || ctrlCount) {
-    // vlv must be used if offset is specified or sort control is used
-    LDAPVLVInfo vlvInfo;
-    vlvInfo.ldvlv_after_count = (page_size > 0 ? page_size : 10) - 1;
-    vlvInfo.ldvlv_attrvalue = NULL;
-    vlvInfo.ldvlv_before_count = 0;
-    vlvInfo.ldvlv_context = cookie;
-    vlvInfo.ldvlv_count = 0;
-    vlvInfo.ldvlv_extradata = NULL;
-    // convert zero-based offset to one-based
-    vlvInfo.ldvlv_offset = (page_offset > 0 ? page_offset : 0) + 1;
-    // vlvInfo.ldvlv_version = LDAP_VLVINFO_VERSION; // Somehow ldapsearch.c just left this field out. Maybe it's not used
-    rc = ldap_create_vlv_control(ld->ld, &vlvInfo, &serverCtrls[ctrlCount++]);
+  if (searchRequestControlType == DEFAULT_SRC) {
+
+  }
+  else if (searchRequestControlType == SIMPLE_PAGED_RESULTS_SRC) {
+    rc = ldap_create_page_control(ld->ld, page_size, cookie, 'F', &serverCtrls[ctrlCount++]);
     if (cookie) {
       ber_bvfree(cookie);
       cookie = NULL;
@@ -657,10 +664,36 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
       info.GetReturnValue().Set(-1);
       return;
     }
+  }
+  else if (searchRequestControlType == VIRTUAL_LIST_VIEW_SRC) {
+    if (page_offset > 0 || ctrlCount) {
+      // vlv must be used if offset is specified or sort control is used
+      LDAPVLVInfo vlvInfo;
+      vlvInfo.ldvlv_after_count = (page_size > 0 ? page_size : 10) - 1;
+      vlvInfo.ldvlv_attrvalue = NULL;
+      vlvInfo.ldvlv_before_count = 0;
+      vlvInfo.ldvlv_context = cookie;
+      vlvInfo.ldvlv_count = 0;
+      vlvInfo.ldvlv_extradata = NULL;
+      // convert zero-based offset to one-based
+      vlvInfo.ldvlv_offset = (page_offset > 0 ? page_offset : 0) + 1;
+      // vlvInfo.ldvlv_version = LDAP_VLVINFO_VERSION; // Somehow ldapsearch.c just left this field out. Maybe it's not used
+      rc = ldap_create_vlv_control(ld->ld, &vlvInfo, &serverCtrls[ctrlCount++]);
+      if (cookie) {
+        ber_bvfree(cookie);
+        cookie = NULL;
+      }
+      if (rc != LDAP_SUCCESS) {
+        ldap_controls_free(serverCtrls);
+        free(bufhead);
+        info.GetReturnValue().Set(-1);
+        return;
+      }
 
-  } else if (cookie) {
-    ber_bvfree(cookie);
-    cookie = NULL;
+    } else if (cookie) {
+      ber_bvfree(cookie);
+      cookie = NULL;
+    }
   }
 
   // parse other server controls
@@ -675,6 +708,7 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
 
   rc = ldap_search_ext(ld->ld, *base, scope, *filter , (char **)attrlist, 0,
                        serverCtrls, NULL, NULL, 0, &msgid);
+
   ldap_controls_free(serverCtrls);
 
   if (LDAP_API_ERROR(rc)) {

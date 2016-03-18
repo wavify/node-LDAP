@@ -79,8 +79,8 @@ function LDAP(opt) {
     this.connectionId = GID;
     if (Number.MAX_SAFE_INTEGER != GID)
       GID++;
-    else 
-      GID = 0;    
+    else
+      GID = 0;
     if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId , " initialized")
 
     try {
@@ -174,15 +174,42 @@ LDAP.prototype.add = function(dn, attrs, fn) {
 LDAP.prototype.search = function(opt, fn) {
     this.stats.searches++;
     if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId, " search()");
+    var srcType = DEFAULT_BINDING_SRC;
+    if (opt.searchRequestControlType) {
+      var srcTypeStr = opt.searchRequestControlType.toLowerCase();
+      if (srcTypeStr == LDAP.prototype.SEARCH_RCTYPE_VLV) {
+        srcType = VIRTUAL_LIST_VIEW_BINDING_SRC;
+        if (opt.sortString == undefined || opt.sortString.length == 0) {
+          throw new LDAPError("VLV control requires server side sort control");
+        }
+      }
+      else if (srcTypeStr == LDAP.prototype.SEARCH_RCTYPE_PAGE) {
+        srcType = SIMPLE_PAGED_RESULTS_BINDING_SRC;
+        if (opt.sortString !== undefined && opt.sortString.length >= 0) {
+          throw new LDAPError("Cannot use both pagedResults control and server side sort control");
+        }
+      }
+    }
+    else {
+      if (opt.pagesize != undefined && opt.pagesize > 0) {
+        if (opt.sortString != undefined && opt.sortString.length > 0) {
+          srcType = VIRTUAL_LIST_VIEW_BINDING_SRC;
+        } else {
+          srcType = SIMPLE_PAGED_RESULTS_BINDING_SRC;
+        }
+      }
+    }
     return this.enqueue(this.ld.search(arg(opt.base   , this.defaults.base),
                                        arg(opt.filter , this.defaults.filter),
                                        arg(opt.attrs  , this.defaults.attrs),
                                        arg(opt.scope  , this.defaults.scope),
                                        opt.controls || [],
+                                       srcType,
                                        opt.pagesize,
                                        opt.cookie,
                                        opt.offset,
-                                       opt.sortString), fn);
+                                       (srcType != SIMPLE_PAGED_RESULTS_BINDING_SRC) ? opt.sortString : null
+                                       ), fn);
 };
 
 LDAP.prototype.rename = function(dn, newrdn, fn) {
@@ -245,7 +272,7 @@ LDAP.prototype.close = function() {
       this.ld = undefined;
     }
     if (LOG_ENABLE) console.log(LOG_PREFIX,  this.connectionId, " close() ");
-    this.closing = false;    
+    this.closing = false;
  };
 
 LDAP.prototype.enqueue = function(msgid, fn) {
@@ -289,5 +316,12 @@ LDAP.prototype.ONELEVEL = 1;
 LDAP.prototype.SUBTREE = 2;
 LDAP.prototype.SUBORDINATE = 3;
 LDAP.prototype.DEFAULT = 4;
+// Search Request Control Type
+LDAP.prototype.SEARCH_RCTYPE_VLV = "vlv";
+LDAP.prototype.SEARCH_RCTYPE_PAGE = "pagedresults";
+
+var DEFAULT_BINDING_SRC = 0;
+var SIMPLE_PAGED_RESULTS_BINDING_SRC = 1;
+var VIRTUAL_LIST_VIEW_BINDING_SRC = 2;
 
 module.exports = LDAP;
