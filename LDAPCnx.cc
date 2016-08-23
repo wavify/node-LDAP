@@ -1,5 +1,6 @@
 #include "LDAPCnx.h"
 #include <iostream>
+#include <fstream>
 
 static struct timeval ldap_tv = { 0, 0 };
 
@@ -12,6 +13,7 @@ using namespace v8;
 using namespace std;
 
 static Persistent<ObjectTemplate> cookie_template;
+static ofstream logfile;
 
 Nan::Persistent<Function> LDAPCnx::constructor;
 
@@ -21,11 +23,25 @@ const char* ToCString(const v8::String::Utf8Value& value) {
 }
 
 LDAPCnx::LDAPCnx() {
+#if NODELDAP_DEBUG
+  if (!logfile.is_open()) {
+    cerr << "open /var/log/nodeldap.log" << endl;
+    logfile.open("/var/log/nodeldap.log", ios::out | ios::app);
+  }
+  logfile << "LDAPCnx()" << endl;
+#endif
 }
 
 LDAPCnx::~LDAPCnx() {
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx()" << endl;
+  if (!logfile.is_open()) {
+    cerr << "open nodeldap.log" << endl;
+    logfile.open("/var/log/nodeldap.log", ios::out | ios::app);
+  }
+  else {
+    cerr << "not open nodeldap.log" << endl;
+  }
+  logfile << "~LDAPCnx()" << endl;
 #endif
   free(this->ldap_callback);
   delete this->callback;
@@ -34,7 +50,7 @@ LDAPCnx::~LDAPCnx() {
 
 void LDAPCnx::Init(Local<Object> exports) {
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx::Init" << endl;
+  logfile << "LDAPCnx::Init" << endl;
 #endif
   Nan::HandleScope scope;
 
@@ -68,7 +84,7 @@ void LDAPCnx::Init(Local<Object> exports) {
 
 void LDAPCnx::New(const Nan::FunctionCallbackInfo<Value>& info) {
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx::New" << endl;
+  logfile << "LDAPCnx::New" << endl;
 #endif
   if (info.IsConstructCall()) {
     // Invoked as constructor: `new LDAPCnx(...)`
@@ -94,10 +110,11 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
   LDAPMessage * entry = NULL;
   LDAPControl** srv_controls = NULL;
   int err = -1;
+  char *errmsgp = NULL;
 
   if (ld->ld == NULL) {
 #if NODELDAP_DEBUG
-    cerr << "LDAPCnx::Event connId:" << ld->connectionId <<" after closed()" << endl;
+    logfile << "LDAPCnx::Event connId:" << ld->connectionId <<" after closed()" << endl;
 #endif
     if (ld->handle) {
       uv_poll_stop(ld->handle);
@@ -108,20 +125,20 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
 
   int res = ldap_result(ld->ld, LDAP_RES_ANY, LDAP_MSG_ALL, &ldap_tv, &message);
 #if NODELDAP_DEBUG
-    cerr << "LDAPCnx::Event connId:" << ld->connectionId << ", res:" << res << endl;
+    logfile << "LDAPCnx::Event connId:" << ld->connectionId << ", res:" << res << endl;
 #endif
 
   // 0: timeout occurred, which I don't think happens in async mode
   // -1: We can't really do much; we don't have a msgid to callback to
   if (res == 0) {
 #if NODELDAP_DEBUG
-    cerr << "LDAPCnx::Event connId:" << ld->connectionId << " failed.  Time out." << endl;
+    logfile << "LDAPCnx::Event connId:" << ld->connectionId << " failed.  Time out." << endl;
 #endif
   }
   else if (res == -1)
   {
 #if NODELDAP_DEBUG
-    cerr << "LDAPCnx::Event connId:" << ld->connectionId << " failed.  Closing connection." << endl;
+    logfile << "LDAPCnx::Event connId:" << ld->connectionId << " failed.  Closing connection." << endl;
 #endif
 
     if (ld->ld != NULL) {
@@ -136,11 +153,25 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
   else
   {
     //int err = ldap_result2error(ld->ld, message, 0);
-    ldap_parse_result(ld->ld, message, &err,
-                      NULL, NULL, NULL, &srv_controls, 0);
+    res = ldap_parse_result(ld->ld, message, &err,
+                      NULL, &errmsgp, NULL, &srv_controls, 0); 
+                      
+    if (res != LDAP_SUCCESS) {
+#if NODELDAP_DEBUG
+      logfile << "LDAPCnx::Event connId:"<< ld->connectionId <<" ldap_parse_result err: " << res << "(" << ldap_err2string(res) << ")" << endl;
+#endif
+    
+    }                  
     if (err) {
 #if NODELDAP_DEBUG
-      cerr << "LDAPCnx::Event connId:"<< ld->connectionId <<" err: " << err << "(" << ldap_err2string(err) << ")" << endl;
+      if (errmsgp != NULL) {
+        logfile << "LDAPCnx::Event connId:"<< ld->connectionId;
+        logfile << " err: " << err << "(" << ldap_err2string(err);
+        logfile << ";" << errmsgp << ")" << endl;
+      } else {  
+        logfile << "LDAPCnx::Event connId:"<< ld->connectionId;
+        logfile <<" err: " << err << "(" << ldap_err2string(err) << ")" << endl;
+      }
 #endif
     }
 
@@ -254,7 +285,15 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
           Local<Value> argv[6];
           argv[0] = Nan::New(err);
           if (err) {
-            argv[1] = String::NewFromUtf8(isolate, ldap_err2string(err));
+            char* errCodeStr = ldap_err2string(err);
+            if (errmsgp != NULL) {
+              char* detailErrMsg = new char[strlen(errCodeStr) + 1 + strlen(errmsgp)];
+              strcpy(detailErrMsg, errCodeStr);
+              strcat(detailErrMsg, "\n");
+              strcat(detailErrMsg, errmsgp);
+              argv[1] = String::NewFromUtf8(isolate,  detailErrMsg);            
+            } else  
+              argv[1] = String::NewFromUtf8(isolate, errCodeStr);
           } else {
             argv[1] = Nan::Undefined();
           }
@@ -288,10 +327,19 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
         Isolate * isolate = v8::Isolate::GetCurrent();
         Local<Value> argv[3];
         argv[0] = Nan::New(err);
-        if (err)
-          argv[1] = String::NewFromUtf8(isolate, ldap_err2string(err));
-        else
+        if (err) {
+          char* errCodeStr = ldap_err2string(err);          
+          if (errmsgp != NULL) {
+            char* detailErrMsg = new char[strlen(errCodeStr) + 1 + strlen(errmsgp)];
+            strcpy(detailErrMsg, errCodeStr);
+            strcat(detailErrMsg, "\n");
+            strcat(detailErrMsg, errmsgp);
+            argv[1] = String::NewFromUtf8(isolate,  detailErrMsg);            
+          } else  
+            argv[1] = String::NewFromUtf8(isolate, errCodeStr);
+        } else {
           argv[1] = Nan::Undefined();
+        }
         argv[2] = Nan::New(ldap_msgid(message));
         ld->callback->Call(3, argv);
         break;
@@ -305,6 +353,8 @@ void LDAPCnx::Event(uv_poll_t* handle, int status, int events) {
     }
   }
 
+  if (errmsgp != NULL)
+    ldap_memfree(errmsgp);
   ldap_msgfree(message);
   return;
 }
@@ -320,7 +370,7 @@ int LDAPCnx::OnConnect(LDAP *ld, Sockbuf *sb,
   int fd;
   LDAPCnx * lc = (LDAPCnx *)ctx->lc_arg;
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx::OnConnect connId:" << lc->connectionId << endl;
+  logfile << "LDAPCnx::OnConnect connId:" << lc->connectionId << endl;
 #endif
 
   if (lc->handle == NULL) {
@@ -343,7 +393,7 @@ void LDAPCnx::OnDisconnect(LDAP *ld, Sockbuf *sb,
   // this fires when the connection closes
   LDAPCnx * lc = (LDAPCnx *)ctx->lc_arg;
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx::OnDisconnect connId:" << lc->connectionId << endl;
+  logfile << "LDAPCnx::OnDisconnect connId:" << lc->connectionId << endl;
 #endif
   if (lc->handle) {
     uv_poll_stop(lc->handle);
@@ -354,11 +404,11 @@ void LDAPCnx::OnDisconnect(LDAP *ld, Sockbuf *sb,
 
 void LDAPCnx::Initialize(const Nan::FunctionCallbackInfo<Value>& info) {
 #if NODELDAP_DEBUG_ARG
-  cerr << "LDAPCnx::Initialize" << endl;
+  logfile << "LDAPCnx::Initialize" << endl;
   for (int i = 0; i < info.Length(); i++) {
     v8::String::Utf8Value str(info[i]);
     const char* cstr = ToCString(str);
-    cerr << "LDAPCnx::Initialize: arg" << i << "=" << cstr << endl;
+    logfile << "LDAPCnx::Initialize: arg" << i << "=" << cstr << endl;
   }
 #endif
 
@@ -379,13 +429,13 @@ void LDAPCnx::Initialize(const Nan::FunctionCallbackInfo<Value>& info) {
   int res = ldap_initialize(&(ld->ld), *url) ;
   if (res != LDAP_SUCCESS) {
 #if NODELDAP_DEBUG
-    cerr << "LDAPCnx::Initialize Error:" << res << endl;
+    logfile << "LDAPCnx::Initialize Error:" << res << endl;
 #endif
     Nan::ThrowError("Error init");
     return;
   }
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx::Initialized connId:" << ld->connectionId <<" result:" << res << endl;
+  logfile << "LDAPCnx::Initialized connId:" << ld->connectionId <<" result:" << res << endl;
 #endif
 
   struct timeval ntimeout = { timeout/1000, (timeout%1000) * 1000 };
@@ -398,13 +448,18 @@ void LDAPCnx::Initialize(const Nan::FunctionCallbackInfo<Value>& info) {
   if (starttls == 1) {
     res = ldap_start_tls_s(ld->ld, NULL, NULL);
 #if NODELDAP_DEBUG
-    cerr << "LDAPCnx::Initialize ldap_start_tls_s: " << res << endl;
+    logfile << "LDAPCnx::Initialize ldap_start_tls_s: " << res << endl;
 #endif
+  }
+
+  if (res != LDAP_SUCCESS && res != 0 && res != 1) {
+    Nan::ThrowError("Error start_tls");
+    return;
   }
 
   res = ldap_simple_bind(ld->ld, NULL, NULL);
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx::Initialize ldap_simple_bind: " << res << endl;
+  logfile << "LDAPCnx::Initialize ldap_simple_bind: " << res << endl;
 #endif
 
   if (res == -1) {
@@ -416,7 +471,7 @@ void LDAPCnx::Initialize(const Nan::FunctionCallbackInfo<Value>& info) {
 
   if (fd < 0) {
 #if NODELDAP_DEBUG
-    cerr << "LDAPCnx::Initialize Connection issue: fd < 0" << endl;
+    logfile << "LDAPCnx::Initialize Connection issue: fd < 0" << endl;
 #endif
     Nan::ThrowError("Connection issue");
     return;
@@ -456,11 +511,11 @@ void LDAPCnx::Delete(const Nan::FunctionCallbackInfo<Value>& info) {
 void LDAPCnx::Bind(const Nan::FunctionCallbackInfo<Value>& info) {
   LDAPCnx* ld = ObjectWrap::Unwrap<LDAPCnx>(info.Holder());
 #if NODELDAP_DEBUG_ARG
-  cerr << "LDAPCnx::Bind connId:" << ld->connectionId << endl;
+  logfile << "LDAPCnx::Bind connId:" << ld->connectionId << endl;
   for (int i = 0; i < info.Length(); i++) {
     v8::String::Utf8Value str(info[i]);
     const char* cstr = ToCString(str);
-    cerr << "LDAPCnx::Bind arg" << i << "=" << cstr << endl;
+    logfile << "LDAPCnx::Bind arg" << i << "=" << cstr << endl;
   }
 #endif
 
@@ -469,7 +524,7 @@ void LDAPCnx::Bind(const Nan::FunctionCallbackInfo<Value>& info) {
 
   int res = ldap_simple_bind(ld->ld, *dn, *pw);
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx::Bind conId:" << ld->connectionId << " result:" << res << endl;
+  logfile << "LDAPCnx::Bind conId:" << ld->connectionId << " result:" << res << endl;
 #endif
   info.GetReturnValue().Set(res);
 }
@@ -486,7 +541,7 @@ void LDAPCnx::Close(const Nan::FunctionCallbackInfo<Value>& info) {
     }
   }
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx::Close connId:" << ld->connectionId <<" result:" << res << endl;
+  logfile << "LDAPCnx::Close connId:" << ld->connectionId <<" result:" << res << endl;
 #endif
   info.GetReturnValue().Set(res);
 }
@@ -540,19 +595,20 @@ static int parseServerControls(Local<Array> controls, LDAPControl **ctrls, int *
 void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
   LDAPCnx* ld = ObjectWrap::Unwrap<LDAPCnx>(info.Holder());
 #if NODELDAP_DEBUG
-  cerr << "LDAPCnx::Search connId:" << ld->connectionId << endl;
+  logfile << "LDAPCnx::Search connId:" << ld->connectionId << endl;
 #endif
 
 #if NODELDAP_DEBUG_ARG
-  cerr << "LDAPCnx::Search connId:" << ld->connectionId << endl;
+  logfile << "LDAPCnx::Search connId:" << ld->connectionId << endl;
   for (int i = 0; i < info.Length(); i++) {
     v8::String::Utf8Value str(info[i]);
     const char* cstr = ToCString(str);
-    cerr << "LDAPCnx::Search arg" << i << "=" << cstr << endl;
+    logfile << "LDAPCnx::Search arg" << i << "=" << cstr << endl;
   }
 #endif
 
   if (ld->ld == NULL) {
+    logfile << "LDAPCnx::Search connection was closed" << endl;    
     info.GetReturnValue().Set(-1);
     return;
   }
@@ -575,6 +631,11 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
   if (!(info[4]->IsUndefined())) {
     controls = Local<Array>::Cast(info[4]);
   } else {
+
+#if NODELDAP_DEBUG_ARG
+  logfile << "LDAPCnx::Search connId:" << ld->connectionId << " invalid argument" << endl;
+#endif
+    
     info.GetReturnValue().Set(-1);
     return;
   }
@@ -587,7 +648,13 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
     page_size = info[6]->Int32Value();
   }
   if (!(info[7]->IsUndefined())) {
+    // cookie
     if (!info[7]->IsObject()) {
+
+#if NODELDAP_DEBUG_ARG
+  logfile << "LDAPCnx::Search connId:" << ld->connectionId << " invalid argument" << endl;
+#endif
+      
       info.GetReturnValue().Set(-1);
       return;
     }
@@ -659,6 +726,11 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
       cookie = NULL;
     }
     if (rc != LDAP_SUCCESS) {
+
+#if NODELDAP_DEBUG_ARG
+  logfile << "LDAPCnx::Search connId:" << ld->connectionId << " invalid page control" << endl;
+#endif
+      
       ldap_controls_free(serverCtrls);
       free(bufhead);
       info.GetReturnValue().Set(-1);
@@ -684,6 +756,11 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
         cookie = NULL;
       }
       if (rc != LDAP_SUCCESS) {
+
+#if NODELDAP_DEBUG_ARG
+  logfile << "LDAPCnx::Search connId:" << ld->connectionId << " invalid vlv control" << endl;
+#endif
+        
         ldap_controls_free(serverCtrls);
         free(bufhead);
         info.GetReturnValue().Set(-1);
@@ -700,11 +777,20 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
   rc = parseServerControls(controls, serverCtrls, &ctrlCount);
 
   if (rc != LDAP_SUCCESS) {
+
+#if NODELDAP_DEBUG_ARG
+  logfile << "LDAPCnx::Search connId:" << ld->connectionId << " invalid server control" << endl;
+#endif
+    
     ldap_controls_free(serverCtrls);
     free(bufhead);
     info.GetReturnValue().Set(-1);
     return;
   }
+
+#if NODELDAP_DEBUG_ARG
+  logfile << "LDAPCnx::Search connId:" << ld->connectionId << " ldap_search_ext" << endl;
+#endif
 
   rc = ldap_search_ext(ld->ld, *base, scope, *filter , (char **)attrlist, 0,
                        serverCtrls, NULL, NULL, 0, &msgid);
@@ -717,6 +803,11 @@ void LDAPCnx::Search(const Nan::FunctionCallbackInfo<Value>& info) {
 
   free(bufhead);
   info.GetReturnValue().Set(msgid);
+
+#if NODELDAP_DEBUG_ARG
+  logfile << "LDAPCnx::Search connId:" << ld->connectionId << " exit" << endl;
+#endif
+  
 }
 
 void LDAPCnx::Modify(const Nan::FunctionCallbackInfo<Value>& info) {
