@@ -269,7 +269,6 @@ LDAP.prototype.findandbind = function(opt, fn) {
             throw new Error('Missing argument');
         }
     if (LOG_ENABLE) console.log(LOG_PREFIX, this.connectionId, ", findandbind()", opt);
-    opt.attrs = ["userPrincipalName"];    
     this.search(opt, function(err, data) {
         if (err) {
             fn(err);
@@ -282,7 +281,17 @@ LDAP.prototype.findandbind = function(opt, fn) {
         if (this.auth_connection === undefined) {
             this.auth_connection = new LDAP(this.defaults);
         }
-        var dn = data[0].userPrincipalName && data[0].userPrincipalName.length ? data[0].userPrincipalName[0] : data[0].dn;
+        var dn;
+        if (opt.attrs && opt.attrs.length) {
+          opt.attrs.forEach(function(key) {
+            if (data[0][key] && data[0][key].length) {
+              dn = data[0][key][0];
+            }
+          });
+        }
+        if (!dn) {
+          dn = data[0].dn;
+        }
         this.auth_connection.bind({ binddn: dn, password: opt.password }, function(err) {
             if (err) {
                 fn(err);
