@@ -38,9 +38,6 @@ LDAPCnx::~LDAPCnx() {
     cerr << "open nodeldap.log" << endl;
     logfile.open("/var/log/nodeldap.log", ios::out | ios::app);
   }
-  else {
-    cerr << "not open nodeldap.log" << endl;
-  }
   logfile << "~LDAPCnx()" << endl;
 #endif
   free(this->ldap_callback);
