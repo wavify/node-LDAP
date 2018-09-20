@@ -43,7 +43,7 @@ function LDAP(opt) {
         ntimeout:    1000,
         autoreconnect:true
     };
-    this.timeout = 2000;
+    this.timeout = opt.timeout || 2000;
 
     this.stats = new Stats();
 
